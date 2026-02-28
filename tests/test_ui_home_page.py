@@ -98,6 +98,59 @@ def _make_home_page() -> object:
 
 
 # ---------------------------------------------------------------------------
+# _on_connect_clicked routing tests
+# ---------------------------------------------------------------------------
+
+
+class TestHomePageOnConnectClicked:
+    """Verify the Connect/Disconnect button click handler routes correctly.
+
+    _on_connect_clicked() calls get_status() to decide between _do_connect()
+    and _do_disconnect().  All three branches must be exercised:
+      1. CONNECTED  → _do_disconnect()
+      2. not-CONNECTED → _do_connect()
+      3. get_status() raises → _do_connect() (safe default)
+
+    None of the existing tests cover this routing because they all call
+    _do_connect() / _do_disconnect() directly.
+    """
+
+    def test_connected_state_routes_to_disconnect(self) -> None:
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_be.get_status.return_value = _make_status("CONNECTED", ip="10.0.0.1")
+
+        with patch.object(page, "_do_disconnect") as mock_disc, \
+             patch.object(page, "_do_connect") as mock_conn:
+            page._on_connect_clicked(None)
+
+        mock_disc.assert_called_once()
+        mock_conn.assert_not_called()
+
+    def test_disconnected_state_routes_to_connect(self) -> None:
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_be.get_status.return_value = _make_status("DISCONNECTED")
+
+        with patch.object(page, "_do_disconnect") as mock_disc, \
+             patch.object(page, "_do_connect") as mock_conn:
+            page._on_connect_clicked(None)
+
+        mock_conn.assert_called_once()
+        mock_disc.assert_not_called()
+
+    def test_get_status_exception_routes_to_connect(self) -> None:
+        """When get_status() raises, the handler must default to _do_connect()."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_be.get_status.side_effect = RuntimeError("backend unavailable")
+
+        with patch.object(page, "_do_disconnect") as mock_disc, \
+             patch.object(page, "_do_connect") as mock_conn:
+            page._on_connect_clicked(None)
+
+        mock_conn.assert_called_once()
+        mock_disc.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Status update tests
 # ---------------------------------------------------------------------------
 
@@ -150,6 +203,25 @@ class TestHomePageStatusUpdates:
     def test_connecting_state_disables_button(self) -> None:
         page = self._page_with_status("CONNECTING")
         page._connect_btn.set_sensitive.assert_called_with(False)
+
+    def test_disconnecting_state_disables_button(self) -> None:
+        page = self._page_with_status("DISCONNECTING")
+        page._connect_btn.set_sensitive.assert_called_with(False)
+
+    def test_disconnecting_state_shows_spinner(self) -> None:
+        page = self._page_with_status("DISCONNECTING")
+        page._spinner.set_visible.assert_called_with(True)
+        page._spinner.set_spinning.assert_called_with(True)
+
+    def test_disconnecting_state_hides_info_label(self) -> None:
+        """_apply_disconnecting must hide the info label.
+
+        Without this, the IP address stays visible while the tunnel is being
+        torn down — an inconsistency with the CONNECTING and DISCONNECTED
+        states which both call self._info_label.set_visible(False).
+        """
+        page = self._page_with_status("DISCONNECTING")
+        page._info_label.set_visible.assert_called_with(False)
 
     def test_error_state_shows_error_message(self) -> None:
         page = self._page_with_status("ERROR", error="Auth failed")
@@ -313,13 +385,18 @@ class TestHomePageConnectDisconnect:
     def test_disconnect_failure_does_not_call_refresh_status(self) -> None:
         """When disconnect() returns False, _refresh_status must NOT be called.
 
-        disconnect() already dispatched ERROR status via _update_status().
         Calling _refresh_status() would invoke get_status() → check tunsnx →
         if still exists → override ERROR with CONNECTED, hiding the error
-        message from the user.  This mirrors the fix applied to _start_connect.
+        message from the user.
         """
+        from snxui.core.types import ConnectionStatus, ConnectionState
+
         page, _pm, _cs, mock_be = _make_home_page()
         mock_be.disconnect.return_value = False
+        mock_be.get_cached_status.return_value = ConnectionStatus(
+            state=ConnectionState.ERROR,
+            error_message="Disconnect may not have succeeded",
+        )
 
         finished = threading.Event()
         original_thread = threading.Thread
@@ -349,3 +426,119 @@ class TestHomePageConnectDisconnect:
             "_refresh_status must not be called when disconnect() fails; "
             "it would override ERROR status with CONNECTED (tunsnx still up)"
         )
+
+    def test_disconnect_exception_calls_refresh_status(self) -> None:
+        """When disconnect() raises an exception, _refresh_status must be called.
+
+        The exception path (FileNotFoundError / RuntimeError from pexpect missing)
+        cannot read cached status because disconnect() set no internal status —
+        it raised before any _update_status() call.  The only safe recovery is
+        to call _refresh_status() which probes get_status() to show actual state.
+
+        This is the *opposite* of the success=False path (which must NOT call
+        _refresh_status to avoid overriding ERROR with CONNECTED).
+        """
+        from snxui.ui import home_page as hp_mod
+
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_be.disconnect.side_effect = RuntimeError("snx binary missing")
+
+        finished = threading.Event()
+        original_thread = threading.Thread
+
+        def capturing_thread(*args, **kwargs):
+            t = original_thread(*args, **kwargs)
+            t.daemon = True
+
+            original_start = t.start
+
+            def start_and_signal():
+                original_start()
+                t.join(timeout=2)
+                finished.set()
+
+            t.start = start_and_signal
+            return t
+
+        refresh_calls: list[int] = []
+        page._refresh_status = lambda: refresh_calls.append(1)
+
+        original_glib = hp_mod.GLib
+        glib_sync = MagicMock()
+        glib_sync.idle_add = lambda fn, *args: fn(*args)
+        hp_mod.GLib = glib_sync
+        try:
+            with patch("snxui.ui.home_page.threading.Thread", side_effect=capturing_thread):
+                page._do_disconnect()
+            finished.wait(timeout=3)
+        finally:
+            hp_mod.GLib = original_glib
+            try:
+                del page._refresh_status
+            except AttributeError:
+                pass
+
+        assert refresh_calls == [1], (
+            "_refresh_status must be called exactly once when disconnect() raises; "
+            "it is the only way to sync UI state when disconnect() set no status."
+        )
+
+    def test_disconnect_failure_dispatches_cached_error_to_ui(self) -> None:
+        """When disconnect() fails, the ERROR status must be shown in the UI.
+
+        Previously the UI was left stuck at 'Disconnecting...' because
+        _do_disconnect() called neither _refresh_status() nor any other
+        UI update when disconnect() returned False.  The fix reads the
+        cached backend status via get_cached_status() and dispatches it.
+
+        Both hp_mod.GLib and page.update_status are replaced via direct
+        assignment (not a context-manager patch) so the replacements remain
+        active inside the background thread.  patch.object context managers
+        are reverted as soon as their with-block exits, before the daemon
+        thread has had a chance to run.
+        """
+        from snxui.core.types import ConnectionStatus, ConnectionState
+        from snxui.ui import home_page as hp_mod
+
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_be.disconnect.return_value = False
+        error_status = ConnectionStatus(
+            state=ConnectionState.ERROR,
+            error_message="Disconnect may not have succeeded",
+        )
+        mock_be.get_cached_status.return_value = error_status
+
+        finished = threading.Event()
+        original_thread = threading.Thread
+
+        def capturing_thread(*args, **kwargs):
+            t = original_thread(*args, **kwargs)
+            t.daemon = True
+
+            original_start = t.start
+
+            def start_and_signal():
+                original_start()
+                t.join(timeout=2)
+                finished.set()
+
+            t.start = start_and_signal
+            return t
+
+        # Replace update_status and GLib directly so the changes persist across
+        # the background thread's lifetime.
+        page.update_status = MagicMock()
+        original_glib = hp_mod.GLib
+        glib_sync = MagicMock()
+        glib_sync.idle_add = lambda fn, *args: fn(*args)
+        hp_mod.GLib = glib_sync
+        try:
+            with patch("snxui.ui.home_page.threading.Thread", side_effect=capturing_thread):
+                page._do_disconnect()
+            finished.wait(timeout=3)
+        finally:
+            hp_mod.GLib = original_glib
+
+        mock_be.get_cached_status.assert_called_once()
+        page.update_status.assert_called_once()
+        assert page.update_status.call_args[0][0].state == ConnectionState.ERROR

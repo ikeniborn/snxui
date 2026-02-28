@@ -11,10 +11,22 @@ import logging
 import uuid
 from typing import Callable, Optional, TYPE_CHECKING
 
+from snxui import __version__
+
 if TYPE_CHECKING:
     from snxui.core.types import Profile
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 2FA method constants (used in ProfileDialog and TwoFactorDialog)
+# ---------------------------------------------------------------------------
+
+_2FA_METHOD_LABELS = [
+    "None", "TOTP (Time-based)", "HOTP (Counter-based)",
+    "RSA SecurID", "Challenge-Response", "RADIUS Token",
+]
+_2FA_METHOD_VALUES = ["none", "totp", "hotp", "rsa", "challenge", "radius"]
 
 try:
     import gi
@@ -68,8 +80,16 @@ class PasswordDialog:
         """
         dialog = Adw.Dialog(title="Connect to VPN")
         dialog.set_content_width(360)
+        content_box = self._build_content(dialog, callback)
+        dialog.set_child(content_box)
+        dialog.present(parent)
 
-        # Content.
+    def _build_content(
+        self,
+        dialog: object,
+        callback: Callable[[Optional[str], bool], None],
+    ) -> "Gtk.Box":
+        """Build and return the content box for the password dialog."""
         content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         content_box.set_margin_top(24)
         content_box.set_margin_bottom(24)
@@ -81,17 +101,27 @@ class PasswordDialog:
         heading.set_halign(Gtk.Align.START)
         content_box.append(heading)
 
-        # Password entry.
         prefs_group = Adw.PreferencesGroup()
         password_row = Adw.PasswordEntryRow(title="Password")
         prefs_group.add(password_row)
         content_box.append(prefs_group)
 
-        # Save password checkbox.
         save_check = Gtk.CheckButton(label="Remember password in keyring")
         content_box.append(save_check)
 
-        # Buttons.
+        content_box.append(
+            self._build_password_buttons(dialog, callback, password_row, save_check)
+        )
+        return content_box
+
+    def _build_password_buttons(
+        self,
+        dialog: object,
+        callback: Callable[[Optional[str], bool], None],
+        password_row: object,
+        save_check: object,
+    ) -> "Gtk.Box":
+        """Build and return the Cancel / Connect button row."""
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
@@ -116,14 +146,90 @@ class PasswordDialog:
             ),
         )
         btn_box.append(connect_btn)
-        content_box.append(btn_box)
+        return btn_box
 
+
+# ---------------------------------------------------------------------------
+# TwoFactorDialog
+# ---------------------------------------------------------------------------
+
+
+class TwoFactorDialog:
+    """Modal dialog для ввода 2FA кода.
+
+    Callback: callback(code: Optional[str]) — None при отмене.
+    """
+
+    def __init__(self, profile_name: str = "", prompt_text: str = "") -> None:
+        if not _GTK_AVAILABLE:
+            raise ImportError("GTK4/Libadwaita is required for TwoFactorDialog.")
+        self._profile_name = profile_name
+        self._prompt_text = prompt_text
+
+    def show(
+        self,
+        callback: Callable[[Optional[str]], None],
+        parent: object = None,
+    ) -> None:
+        """Present the dialog.
+
+        Args:
+            callback: Called with the entered code, or None on cancel.
+            parent: Optional parent GTK widget/window.
+        """
+        dialog = Adw.Dialog(title="Two-Factor Authentication")
+        dialog.set_content_width(360)
+        content_box = self._build_content(dialog, callback)
         dialog.set_child(content_box)
+        dialog.present(parent)
 
-        if parent is not None:
-            dialog.present(parent)
-        else:
-            dialog.present(None)
+    def _build_content(self, dialog: object, callback: Callable[[Optional[str]], None]) -> "Gtk.Box":
+        """Build and return the content box for the 2FA dialog."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(24)
+        box.set_margin_bottom(24)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
+
+        heading = Gtk.Label(label=f"2FA Required — {self._profile_name}")
+        heading.add_css_class("title-3")
+        heading.set_halign(Gtk.Align.START)
+        box.append(heading)
+
+        if self._prompt_text.strip():
+            prompt_label = Gtk.Label(label=self._prompt_text.strip())
+            prompt_label.add_css_class("caption")
+            prompt_label.set_wrap(True)
+            prompt_label.set_halign(Gtk.Align.START)
+            box.append(prompt_label)
+
+        prefs_group = Adw.PreferencesGroup()
+        # EntryRow (не PasswordEntryRow) — 2FA коды принято видеть при вводе
+        code_row = Adw.EntryRow(title="Authentication Code")
+        code_row.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        prefs_group.add(code_row)
+        box.append(prefs_group)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_box.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        # Читаем значение ДО close() — паттерн из PasswordDialog
+        cancel_btn.connect("clicked", lambda _b: (dialog.close(), callback(None)))
+        btn_box.append(cancel_btn)
+
+        ok_btn = Gtk.Button(label="Authenticate")
+        ok_btn.add_css_class("suggested-action")
+        ok_btn.connect(
+            "clicked",
+            lambda _b: (
+                callback(code_row.get_text().strip() or None),
+                dialog.close(),
+            ),
+        )
+        btn_box.append(ok_btn)
+        box.append(btn_box)
+        return box
 
 
 # ---------------------------------------------------------------------------
@@ -136,13 +242,14 @@ class ProfileDialog:
 
     Args:
         profile: Existing profile to edit, or None to create a new one.
-        callback: Called with the resulting Profile, or None on cancel.
+        callback: Called with (profile, totp_secret) or (None, None) on cancel.
+            The second argument is the new TOTP secret string if entered, or None.
     """
 
     def __init__(
         self,
         profile: Optional["Profile"],
-        callback: Callable[[Optional["Profile"]], None],
+        callback: Callable[[Optional["Profile"], Optional[str]], None],
     ) -> None:
         if not _GTK_AVAILABLE:
             raise ImportError("GTK4/Libadwaita is required for ProfileDialog.")
@@ -152,15 +259,21 @@ class ProfileDialog:
 
     def show(self, parent: object = None) -> None:
         """Present the profile editor dialog."""
-        from snxui.core.types import Profile
-
         is_new = self._profile is None
-        title = "Add Profile" if is_new else "Edit Profile"
-
-        dialog = Adw.Dialog(title=title)
+        dialog = Adw.Dialog(title="Add Profile" if is_new else "Edit Profile")
         dialog.set_content_width(400)
 
-        # Scrolled content.
+        scroll, rows = self._build_form_rows()
+        action_area = self._build_action_area(dialog, is_new, rows)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.append(scroll)
+        outer.append(action_area)
+        dialog.set_child(outer)
+        dialog.present(parent)
+
+    def _build_form_rows(self) -> "tuple[Gtk.ScrolledWindow, dict]":
+        """Build the scrolled form and return (scroll, rows_dict)."""
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_min_content_height(300)
@@ -169,62 +282,92 @@ class ProfileDialog:
         prefs_page = Adw.PreferencesPage()
         group = Adw.PreferencesGroup(title="Profile Details")
         prefs_page.add(group)
-
-        # Name.
-        name_row = Adw.EntryRow(title="Profile Name")
-        name_row.set_text(self._profile.name if self._profile else "")
-        group.add(name_row)
-
-        # Server.
-        server_row = Adw.EntryRow(title="Server (hostname)")
-        server_row.set_text(self._profile.server if self._profile else "")
-        group.add(server_row)
-
-        # Username.
-        user_row = Adw.EntryRow(title="Username")
-        user_row.set_text(self._profile.username if self._profile else "")
-        group.add(user_row)
-
-        # SSL Port.
-        port_row = Adw.SpinRow.new_with_range(1, 65535, 1)
-        port_row.set_title("SSL Port")
-        port_row.set_value(self._profile.ssl_port if self._profile else 443)
-        group.add(port_row)
-
-        # CA certs path.
-        ca_row = Adw.EntryRow(title="CA Certificates Path")
-        ca_row.set_text(self._profile.ca_list if self._profile else "/etc/ssl/certs")
-        group.add(ca_row)
-
-        # Client certificate (optional).
-        cert_row = Adw.EntryRow(title="Client Certificate (optional)")
-        cert_row.set_text(self._profile.certificate or "" if self._profile else "")
-        group.add(cert_row)
-
-        # Save password checkbox row.
-        save_pwd_row = Adw.SwitchRow(title="Save Password in Keyring")
-        save_pwd_row.set_active(self._profile.save_password if self._profile else False)
-        group.add(save_pwd_row)
-
         scroll.set_child(prefs_page)
 
-        # Buttons.
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_box.set_margin_top(12)
-        btn_box.set_margin_bottom(16)
-        btn_box.set_margin_start(16)
-        btn_box.set_margin_end(16)
-        btn_box.set_halign(Gtk.Align.END)
+        p = self._profile
+        name_row = Adw.EntryRow(title="Profile Name")
+        name_row.set_text(p.name if p else "")
+        group.add(name_row)
+        server_row = Adw.EntryRow(title="Server (hostname)")
+        server_row.set_text(p.server if p else "")
+        group.add(server_row)
+        user_row = Adw.EntryRow(title="Username")
+        user_row.set_text(p.username if p else "")
+        group.add(user_row)
+        port_row = Adw.SpinRow.new_with_range(1, 65535, 1)
+        port_row.set_title("SSL Port")
+        port_row.set_value(p.ssl_port if p else 443)
+        group.add(port_row)
+        ca_row = Adw.EntryRow(title="CA Certificates Path")
+        ca_row.set_text(p.ca_list if p else "/etc/ssl/certs")
+        group.add(ca_row)
+        cert_row = Adw.EntryRow(title="Client Certificate (optional)")
+        cert_row.set_text(p.certificate or "" if p else "")
+        group.add(cert_row)
+        save_pwd_row = Adw.SwitchRow(title="Save Password in Keyring")
+        save_pwd_row.set_active(p.save_password if p else False)
+        group.add(save_pwd_row)
 
-        cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect("clicked", lambda _b: (dialog.close(), self._callback(None)))
-        btn_box.append(cancel_btn)
+        cur_method_idx = 0
+        if p and p.two_factor_method.value in _2FA_METHOD_VALUES:
+            cur_method_idx = _2FA_METHOD_VALUES.index(p.two_factor_method.value)
+        method_row, totp_row, save_totp_row = self._build_2fa_group(
+            prefs_page, cur_method_idx
+        )
 
-        save_label = "Add" if is_new else "Save"
-        save_btn = Gtk.Button(label=save_label)
-        save_btn.add_css_class("suggested-action")
+        rows = {
+            "name": name_row, "server": server_row, "user": user_row,
+            "port": port_row, "ca": ca_row, "cert": cert_row,
+            "save_pwd": save_pwd_row,
+            "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
+        }
+        return scroll, rows
 
-        # Inline error label — shown only when validation fails.
+    def _build_2fa_group(
+        self, prefs_page: object, cur_method_idx: int
+    ) -> "tuple[object, object, object]":
+        """Build the Two-Factor Authentication group and add it to *prefs_page*.
+
+        Args:
+            prefs_page: The Adw.PreferencesPage to add the group to.
+            cur_method_idx: Index of the currently selected 2FA method.
+
+        Returns:
+            Tuple of (method_row, totp_row, save_totp_row).
+        """
+        tfa_group = Adw.PreferencesGroup(title="Two-Factor Authentication")
+        prefs_page.add(tfa_group)
+
+        method_model = Gtk.StringList()
+        for label in _2FA_METHOD_LABELS:
+            method_model.append(label)
+        method_row = Adw.ComboRow(title="2FA Method", model=method_model)
+        method_row.set_selected(cur_method_idx)
+        tfa_group.add(method_row)
+
+        p = self._profile
+        totp_row = Adw.PasswordEntryRow(title="TOTP Secret (Base32, optional)")
+        # Do not pre-fill with stored secret — only accept new input here.
+        totp_row.set_visible(cur_method_idx in (1, 2))  # TOTP / HOTP
+        tfa_group.add(totp_row)
+
+        save_totp_row = Adw.SwitchRow(title="Save TOTP Secret in Keyring")
+        save_totp_row.set_active(p.save_totp_secret if p else False)
+        save_totp_row.set_visible(cur_method_idx in (1, 2))
+        tfa_group.add(save_totp_row)
+
+        def _on_method_changed(row: object, _param: object) -> None:
+            is_totp = method_row.get_selected() in (1, 2)
+            totp_row.set_visible(is_totp)
+            save_totp_row.set_visible(is_totp)
+        method_row.connect("notify::selected", _on_method_changed)
+
+        return method_row, totp_row, save_totp_row
+
+    def _build_action_area(
+        self, dialog: object, is_new: bool, rows: "dict[str, object]"
+    ) -> "Gtk.Box":
+        """Build the error label + button row beneath the form."""
         error_label = Gtk.Label(label="")
         error_label.add_css_class("error")
         error_label.set_margin_top(4)
@@ -233,52 +376,90 @@ class ProfileDialog:
         error_label.set_halign(Gtk.Align.START)
         error_label.set_visible(False)
 
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_box.set_margin_top(12)
+        btn_box.set_margin_bottom(16)
+        btn_box.set_margin_start(16)
+        btn_box.set_margin_end(16)
+        btn_box.set_halign(Gtk.Align.END)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", lambda _b: (dialog.close(), self._callback(None, None)))
+        btn_box.append(cancel_btn)
+        btn_box.append(self._build_save_button(dialog, is_new, rows, error_label))
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.append(error_label)
+        outer.append(btn_box)
+        return outer
+
+    def _build_save_button(
+        self,
+        dialog: object,
+        is_new: bool,
+        rows: "dict[str, object]",
+        error_label: object,
+    ) -> "Gtk.Button":
+        """Build the Add/Save button with its on-save handler."""
+        save_btn = Gtk.Button(label="Add" if is_new else "Save")
+        save_btn.add_css_class("suggested-action")
+
         def _on_save(_btn: object) -> None:
-            server = server_row.get_text().strip()
-            username = user_row.get_text().strip()
+            server = rows["server"].get_text().strip()
+            username = rows["user"].get_text().strip()
             if not server or not username:
-                # Keep dialog open and show which field is missing.
                 missing = "Server" if not server else "Username"
                 error_label.set_label(f"{missing} is required.")
                 error_label.set_visible(True)
                 return
             error_label.set_visible(False)
-            # Read ALL widget values BEFORE closing the dialog.  dialog.close()
-            # schedules widget destruction; reading after close() is fragile and
-            # implementation-dependent.  Same rule applied to PasswordDialog.
-            name = name_row.get_text().strip()
-            ssl_port = int(port_row.get_value())
-            ca_list = ca_row.get_text().strip() or "/etc/ssl/certs"
-            certificate = cert_row.get_text().strip() or None
-            save_password = save_pwd_row.get_active()
-            dialog.close()
-            profile = Profile(
-                id=self._profile.id if self._profile else str(uuid.uuid4()),
-                name=name,
-                server=server,
-                username=username,
-                ssl_port=ssl_port,
-                ca_list=ca_list,
-                certificate=certificate,
-                save_password=save_password,
+            # Read ALL widget values BEFORE closing.  dialog.close() schedules
+            # widget destruction; reading after is fragile.  Same rule as
+            # PasswordDialog.
+            profile, totp_secret = self._collect_profile_from_rows(
+                rows, server, username
             )
-            self._callback(profile)
+            dialog.close()
+            self._callback(profile, totp_secret)
 
         save_btn.connect("clicked", _on_save)
-        btn_box.append(save_btn)
+        return save_btn
 
-        # Wrap scroll + error label + buttons in a vertical box.
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        outer.append(scroll)
-        outer.append(error_label)
-        outer.append(btn_box)
+    def _collect_profile_from_rows(
+        self,
+        rows: "dict[str, object]",
+        server: str,
+        username: str,
+    ) -> "tuple[object, Optional[str]]":
+        """Read all form widget values and construct a :class:`Profile`.
 
-        dialog.set_child(outer)
+        Args:
+            rows: Widget dict from :meth:`_build_form_rows`.
+            server: Pre-read server string (validated by caller).
+            username: Pre-read username string (validated by caller).
 
-        if parent is not None:
-            dialog.present(parent)
-        else:
-            dialog.present(None)
+        Returns:
+            Tuple of ``(Profile, totp_secret)`` where *totp_secret* is the
+            new TOTP secret entered by the user, or ``None``.
+        """
+        from snxui.core.types import Profile, TwoFactorMethod  # noqa: PLC0415
+
+        method_idx = rows["2fa_method"].get_selected()
+        two_factor_method = TwoFactorMethod(_2FA_METHOD_VALUES[method_idx])
+        totp_secret: Optional[str] = rows["totp_secret"].get_text().strip() or None
+        profile = Profile(
+            id=self._profile.id if self._profile else str(uuid.uuid4()),
+            name=rows["name"].get_text().strip(),
+            server=server,
+            username=username,
+            ssl_port=int(rows["port"].get_value()),
+            ca_list=rows["ca"].get_text().strip() or "/etc/ssl/certs",
+            certificate=rows["cert"].get_text().strip() or None,
+            save_password=rows["save_pwd"].get_active(),
+            two_factor_method=two_factor_method,
+            save_totp_secret=rows["save_totp"].get_active(),
+        )
+        return profile, totp_secret
 
 
 # ---------------------------------------------------------------------------
@@ -303,14 +484,11 @@ class AboutDialog:
             application_name="SNX VPN",
             application_icon="network-vpn",
             developer_name="SNX UI Contributors",
-            version="0.1.0",
+            version=__version__,
             comments="GUI client for Check Point SNX VPN",
             license_type=Gtk.License.GPL_3_0,
-            website="https://github.com/YOUR_ORG/snxui",
-            issue_url="https://github.com/YOUR_ORG/snxui/issues",
+            website="https://github.com/snxui/snxui",
+            issue_url="https://github.com/snxui/snxui/issues",
         )
 
-        if parent is not None:
-            dialog.present(parent)
-        else:
-            dialog.present(None)
+        dialog.present(parent)

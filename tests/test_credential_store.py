@@ -11,7 +11,13 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from snxui.core.credential_store import CredentialStore, wipe_string, _SERVICE_NAME, _make_key
+from snxui.core.credential_store import (
+    CredentialStore,
+    wipe_string,
+    _SERVICE_NAME,
+    _make_key,
+    _make_totp_key,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -208,3 +214,60 @@ class TestIsAvailableProbe:
         assert result is False
         # delete_password must have been called to clean up the probe entry.
         mock.delete_password.assert_called_once_with(_SERVICE_NAME, "__probe__")
+
+
+# ---------------------------------------------------------------------------
+# TOTP secret — set/get/delete
+# ---------------------------------------------------------------------------
+
+
+class TestTOTPSecretFallback:
+    """TOTP secret tests using in-memory fallback (keyring unavailable)."""
+
+    @pytest.fixture()
+    def store(self) -> CredentialStore:
+        cs = CredentialStore()
+        cs._available = False
+        return cs
+
+    def test_make_totp_key_prefix(self) -> None:
+        assert _make_totp_key("abc-123") == "totp:abc-123"
+
+    def test_set_get_totp_secret(self, store: CredentialStore) -> None:
+        result = store.set_totp_secret("pid-1", "JBSWY3DPEHPK3PXP")
+        assert result is False  # memory fallback
+        secret = store.get_totp_secret("pid-1")
+        assert secret == "JBSWY3DPEHPK3PXP"
+
+    def test_get_nonexistent_totp_returns_none(self, store: CredentialStore) -> None:
+        assert store.get_totp_secret("no-such") is None
+
+    def test_delete_totp_secret(self, store: CredentialStore) -> None:
+        store.set_totp_secret("pid-1", "JBSWY3DPEHPK3PXP")
+        result = store.delete_totp_secret("pid-1")
+        assert result is True
+        assert store.get_totp_secret("pid-1") is None
+
+    def test_delete_nonexistent_totp_returns_false(self, store: CredentialStore) -> None:
+        result = store.delete_totp_secret("no-such")
+        assert result is False
+
+    def test_totp_key_independent_of_password_key(self, store: CredentialStore) -> None:
+        """Same profile_id: password and TOTP secret must not overwrite each other."""
+        store.set_password("pid-shared", "mypassword")
+        store.set_totp_secret("pid-shared", "JBSWY3DPEHPK3PXP")
+
+        assert store.get_password("pid-shared") == "mypassword"
+        assert store.get_totp_secret("pid-shared") == "JBSWY3DPEHPK3PXP"
+
+        # Deleting TOTP must not affect password
+        store.delete_totp_secret("pid-shared")
+        assert store.get_password("pid-shared") == "mypassword"
+        assert store.get_totp_secret("pid-shared") is None
+
+    def test_clear_all_wipes_totp_secrets(self, store: CredentialStore) -> None:
+        store.set_totp_secret("pid-1", "SECRET1")
+        store.set_password("pid-1", "pass1")
+        store.clear_all()
+        assert store.get_totp_secret("pid-1") is None
+        assert store.get_password("pid-1") is None

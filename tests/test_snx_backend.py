@@ -21,6 +21,7 @@ from snxui.core.snx_backend import (
     _RE_ALREADY,
     _RE_DISCONNECTED,
     _RE_OFFICE_IP,
+    _RE_2FA_ANY,
     _SNX_SEARCH_PATHS,
 )
 from snxui.core.types import ConnectionState, Profile
@@ -173,6 +174,18 @@ class TestBuildArgs:
         args = backend._build_args(profile)
         assert "-n" in args
 
+    def test_ca_list_included(self, backend: SNXBackend, profile: Profile) -> None:
+        profile.ca_list = "/etc/custom/certs"
+        args = backend._build_args(profile)
+        assert "-l" in args
+        assert "/etc/custom/certs" in args
+
+    def test_empty_ca_list_not_in_args(self, backend: SNXBackend, profile: Profile) -> None:
+        """When ca_list is cleared, -l must be absent from the SNX command line."""
+        profile.ca_list = ""
+        args = backend._build_args(profile)
+        assert "-l" not in args
+
     def test_cipher_included(self, backend: SNXBackend, profile: Profile) -> None:
         profile.cipher = "AES256"
         args = backend._build_args(profile)
@@ -295,6 +308,49 @@ class TestConnect:
         assert ConnectionState.CONNECTING in statuses
         assert ConnectionState.CONNECTED in statuses
 
+    def test_connect_success_stores_ip_in_status(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """After a successful connect, ip_address must be stored in the status.
+
+        connect() calls _parse_office_ip(full_output) where full_output =
+        child.before + child.after.  The parsed IP must end up in
+        backend._status.ip_address.  Previously test_connect_success only
+        checked the state, leaving the IP-extraction integration path
+        unverified.
+        """
+        child = _make_child_mock([0, 0])
+        child.before = "Office Mode IP      : 10.1.1.1\n"
+        child.after = "SNX - Connected.\n"
+
+        with self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            result = backend.connect(profile, "password123")
+
+        assert result is True
+        assert backend._status.ip_address == "10.1.1.1"
+
+    def test_connect_pexpect_exception_sets_error_status(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """A pexpect exception during connect sets ERROR state and returns False.
+
+        Covers the ``except pexpect.exceptions.ExceptionPexpect`` handler in
+        ``connect()``.  This path fires when the PTY itself errors (TTY
+        allocation failure, child process crash, etc.) rather than when SNX
+        outputs a recognisable failure pattern.
+        """
+        import pexpect as _pexpect
+
+        child = _make_child_mock([])
+        child.expect.side_effect = _pexpect.exceptions.ExceptionPexpect("PTY error")
+
+        with self._patch_pexpect(child):
+            result = backend.connect(profile, "pass")
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+        assert "pexpect error" in (backend._status.error_message or "")
+
     def test_connect_passes_compiled_regex_to_expect(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
@@ -359,6 +415,23 @@ class TestDisconnect:
 
         assert result is True
 
+    def test_disconnect_failure_when_tunsnx_still_up(self, backend: SNXBackend) -> None:
+        """EOF response but tunsnx is still up — disconnect failed.
+
+        Covers _verify_disconnect_result() returning False: this is the backend
+        path that triggers get_cached_status() in the UI (Round 6 fix).
+        """
+        child = _make_child_mock([1])  # EOF, no explicit disconnect confirmation
+
+        with self._patch_pexpect(child), \
+             patch.object(SNXBackend, "_stop_monitor"), \
+             patch.object(SNXBackend, "_tunsnx_exists", return_value=True):
+            result = backend.disconnect()
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+        assert "Disconnect may not have succeeded" in (backend._status.error_message or "")
+
     def test_disconnect_raises_when_pexpect_missing(self, backend: SNXBackend) -> None:
         with patch("snxui.core.snx_backend.pexpect", None):
             with pytest.raises(RuntimeError, match="pexpect is required"):
@@ -390,6 +463,94 @@ class TestGetStatus:
         with patch.object(SNXBackend, "_tunsnx_exists", return_value=False):
             status = backend.get_status()
         assert status.state == ConnectionState.DISCONNECTED
+
+    def test_get_status_updates_ip_preserves_other_fields(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When already CONNECTED, get_status() updates IP without mutating the object.
+
+        Covers the ``else`` branch at the end of get_status()'s lock block,
+        previously the only place that mutated ConnectionStatus in-place.
+        """
+        import time
+        from snxui.core.types import ConnectionStatus
+
+        ts = time.time()
+        with backend._lock:
+            backend._status = ConnectionStatus(
+                state=ConnectionState.CONNECTED,
+                profile=profile,
+                ip_address="10.0.0.1",
+                interface="tunsnx",
+                connected_at=ts,
+            )
+
+        with patch.object(SNXBackend, "_tunsnx_exists", return_value=True), \
+             patch.object(SNXBackend, "_get_tunsnx_ip", return_value="10.0.0.2"):
+            snapshot = backend.get_status()
+
+        # IP must be updated.
+        assert snapshot.ip_address == "10.0.0.2"
+        # All other fields must be preserved.
+        assert snapshot.state == ConnectionState.CONNECTED
+        assert snapshot.profile is profile
+        assert snapshot.connected_at == ts
+        assert snapshot.interface == "tunsnx"
+        # Snapshot must be a distinct object from self._status.
+        assert snapshot is not backend._status
+
+
+# ---------------------------------------------------------------------------
+# get_cached_status() — no subprocess calls
+# ---------------------------------------------------------------------------
+
+
+class TestGetCachedStatus:
+    def test_returns_cached_snapshot_without_probing_tunsnx(
+        self, backend: SNXBackend
+    ) -> None:
+        """get_cached_status() must NOT call _tunsnx_exists or _get_tunsnx_ip."""
+        from snxui.core.types import ConnectionStatus
+
+        with backend._lock:
+            backend._status = ConnectionStatus(
+                state=ConnectionState.ERROR,
+                error_message="Disconnect failed",
+            )
+
+        with patch.object(SNXBackend, "_tunsnx_exists") as mock_probe, \
+             patch.object(SNXBackend, "_get_tunsnx_ip") as mock_ip:
+            snapshot = backend.get_cached_status()
+
+        mock_probe.assert_not_called()
+        mock_ip.assert_not_called()
+        assert snapshot.state == ConnectionState.ERROR
+        assert snapshot.error_message == "Disconnect failed"
+        # Must be a copy, not the same object.
+        assert snapshot is not backend._status
+
+    def test_preserves_all_fields(self, backend: SNXBackend, profile: Profile) -> None:
+        """get_cached_status() copies all ConnectionStatus fields faithfully."""
+        import time
+        from snxui.core.types import ConnectionStatus
+
+        ts = time.time()
+        with backend._lock:
+            backend._status = ConnectionStatus(
+                state=ConnectionState.CONNECTED,
+                profile=profile,
+                ip_address="10.1.2.3",
+                interface="tunsnx",
+                connected_at=ts,
+            )
+
+        snapshot = backend.get_cached_status()
+
+        assert snapshot.state == ConnectionState.CONNECTED
+        assert snapshot.profile is profile
+        assert snapshot.ip_address == "10.1.2.3"
+        assert snapshot.interface == "tunsnx"
+        assert snapshot.connected_at == ts
 
 
 # ---------------------------------------------------------------------------
@@ -427,3 +588,306 @@ class TestTunsnxHelpers:
         mock_result.stdout = ""
         with patch("subprocess.run", return_value=mock_result):
             assert SNXBackend._get_tunsnx_ip() is None
+
+
+# ---------------------------------------------------------------------------
+# _monitor_connection — monitor loop logic
+# ---------------------------------------------------------------------------
+
+
+def _make_connected_backend() -> "tuple[SNXBackend, Profile]":
+    """Return an SNXBackend with CONNECTED status at 10.0.0.1."""
+    from snxui.core.types import ConnectionStatus
+    backend = SNXBackend()
+    backend._snx_binary = "/fake/snx"
+    profile = Profile(name="Work", server="vpn.example.com", username="alice")
+    backend._status = ConnectionStatus(
+        state=ConnectionState.CONNECTED,
+        profile=profile,
+        ip_address="10.0.0.1",
+    )
+    return backend, profile
+
+
+class TestMonitorConnection:
+    """Direct unit tests for _monitor_connection loop paths."""
+
+    def test_stop_event_exits_without_callback(self) -> None:
+        """If _monitor_stop is already set (wait returns True), loop body never runs."""
+        backend, profile = _make_connected_backend()
+        callback = MagicMock()
+
+        with patch.object(backend._monitor_stop, "wait", return_value=True):
+            with patch.object(SNXBackend, "_tunsnx_exists") as mock_probe:
+                backend._monitor_connection(profile, callback)
+
+        mock_probe.assert_not_called()
+        callback.assert_not_called()
+
+    def test_tunnel_gone_dispatches_disconnected(self) -> None:
+        """When _tunsnx_exists() returns False, callback is called with DISCONNECTED."""
+        backend, profile = _make_connected_backend()
+        callback = MagicMock()
+
+        # One iteration: wait returns False (not stopped) → body runs → tunnel gone → break.
+        with patch.object(backend._monitor_stop, "wait", side_effect=[False]):
+            with patch.object(SNXBackend, "_tunsnx_exists", return_value=False):
+                backend._monitor_connection(profile, callback)
+
+        callback.assert_called_once()
+        snapshot = callback.call_args[0][0]
+        assert snapshot.state == ConnectionState.DISCONNECTED
+        assert "dropped unexpectedly" in snapshot.error_message
+
+    def test_ip_change_dispatches_connected_with_new_ip(self) -> None:
+        """When the tunnel IP changes, callback is invoked with the new IP."""
+        backend, profile = _make_connected_backend()
+        callback = MagicMock()
+
+        # First wait → False (run body); second wait → True (stop).
+        with patch.object(backend._monitor_stop, "wait", side_effect=[False, True]):
+            with patch.object(SNXBackend, "_tunsnx_exists", return_value=True):
+                with patch.object(SNXBackend, "_get_tunsnx_ip", return_value="10.0.0.99"):
+                    backend._monitor_connection(profile, callback)
+
+        callback.assert_called_once()
+        snapshot = callback.call_args[0][0]
+        assert snapshot.state == ConnectionState.CONNECTED
+        assert snapshot.ip_address == "10.0.0.99"
+
+    def test_no_ip_change_no_callback(self) -> None:
+        """When IP hasn't changed, callback is not invoked."""
+        backend, profile = _make_connected_backend()
+        callback = MagicMock()
+
+        # IP returned equals the current ip_address ("10.0.0.1") → no callback.
+        with patch.object(backend._monitor_stop, "wait", side_effect=[False, True]):
+            with patch.object(SNXBackend, "_tunsnx_exists", return_value=True):
+                with patch.object(SNXBackend, "_get_tunsnx_ip", return_value="10.0.0.1"):
+                    backend._monitor_connection(profile, callback)
+
+        callback.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _update_status — internal status snapshot helper
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStatus:
+    """Tests for the _update_status internal helper."""
+
+    def test_returns_independent_copy(self) -> None:
+        """The returned snapshot must be a different object from self._status."""
+        backend = SNXBackend()
+        profile = Profile(name="W", server="s", username="u")
+        with backend._lock:
+            snapshot = backend._update_status(
+                ConnectionState.CONNECTED,
+                profile=profile,
+                ip_address="10.1.1.1",
+            )
+        assert snapshot is not backend._status
+        assert snapshot.state == ConnectionState.CONNECTED
+        assert snapshot.ip_address == "10.1.1.1"
+
+    def test_updates_internal_state(self) -> None:
+        """After _update_status, self._status reflects the new state."""
+        backend = SNXBackend()
+        with backend._lock:
+            backend._update_status(ConnectionState.ERROR, error_message="oops")
+        assert backend._status.state == ConnectionState.ERROR
+        assert backend._status.error_message == "oops"
+
+
+# ---------------------------------------------------------------------------
+# _invoke_callback — static callback dispatcher
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeCallback:
+    """Tests for the _invoke_callback static helper."""
+
+    def test_calls_callback_with_snapshot(self) -> None:
+        """_invoke_callback passes the snapshot to the callback."""
+        from snxui.core.types import ConnectionStatus
+        profile = Profile(name="W", server="s", username="u")
+        snapshot = ConnectionStatus(state=ConnectionState.CONNECTED, profile=profile)
+        callback = MagicMock()
+        SNXBackend._invoke_callback(callback, snapshot)
+        callback.assert_called_once_with(snapshot)
+
+    def test_none_callback_is_noop(self) -> None:
+        """_invoke_callback with None callback does not raise."""
+        from snxui.core.types import ConnectionStatus
+        profile = Profile(name="W", server="s", username="u")
+        snapshot = ConnectionStatus(state=ConnectionState.DISCONNECTED, profile=profile)
+        SNXBackend._invoke_callback(None, snapshot)  # must not raise
+
+    def test_exception_in_callback_is_swallowed(self) -> None:
+        """An exception raised by the callback must not propagate."""
+        from snxui.core.types import ConnectionStatus
+        profile = Profile(name="W", server="s", username="u")
+        snapshot = ConnectionStatus(state=ConnectionState.DISCONNECTED, profile=profile)
+        bad_cb = MagicMock(side_effect=RuntimeError("boom"))
+        SNXBackend._invoke_callback(bad_cb, snapshot)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# connect() 2FA — two-factor authentication loop
+# ---------------------------------------------------------------------------
+
+
+class TestConnect2FA:
+    """Tests for the 2FA interaction loop in SNXBackend.connect()."""
+
+    def _patch_pexpect(self, child_mock):
+        return patch("snxui.core.snx_backend.pexpect.spawn", return_value=child_mock)
+
+    def _patch_monitor(self):
+        return patch.object(SNXBackend, "_start_monitor")
+
+    def _patch_tunsnx(self, exists: bool = False):
+        return patch.object(SNXBackend, "_tunsnx_exists", return_value=exists)
+
+    def test_rsa_securid_then_connected(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """2FA prompt (idx=5) → sendline(code) → connected (idx=0)."""
+        # expect calls: [password_prompt=0, 2fa=5, connected=0]
+        child = _make_child_mock([0, 5, 0])
+        child.before = ""
+        child.after = "SNX - Connected."
+
+        two_factor_callback = MagicMock(return_value="123456")
+
+        with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+            result = backend.connect(
+                profile, "pass",
+                two_factor_callback=two_factor_callback,
+            )
+
+        assert result is True
+        assert backend._status.state == ConnectionState.CONNECTED
+        # sendline must have been called with the 2FA code
+        child.sendline.assert_any_call("123456")
+
+    def test_otp_prompt_then_connected(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Generic OTP prompt resolves to successful connection."""
+        child = _make_child_mock([0, 5, 0])
+        child.before = ""
+        child.after = "SNX - Connected."
+
+        two_factor_callback = MagicMock(return_value="654321")
+
+        with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+            result = backend.connect(
+                profile, "pass",
+                two_factor_callback=two_factor_callback,
+            )
+
+        assert result is True
+        child.sendline.assert_any_call("654321")
+
+    def test_challenge_response_prompt_passed_to_callback(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """The full prompt text must be passed to two_factor_callback."""
+        child = _make_child_mock([0, 5, 0])
+        child.before = "Challenge: DEADBEEF\n"
+        child.after = ""  # after idx=5 expect
+
+        received_prompts: list[str] = []
+
+        def _cb(prompt_text: str):
+            received_prompts.append(prompt_text)
+            return "RESP"
+
+        with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+            result = backend.connect(profile, "pass", two_factor_callback=_cb)
+
+        assert result is True
+        # The callback must have received a non-empty prompt
+        assert len(received_prompts) == 1
+        assert received_prompts[0]  # prompt_text is not empty
+
+    def test_2fa_cancelled(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When callback returns None, connection fails with 'cancelled' message."""
+        child = _make_child_mock([0, 5])
+        child.before = "Enter SecurID PASSCODE:"
+        child.after = ""
+
+        two_factor_callback = MagicMock(return_value=None)
+
+        with self._patch_pexpect(child):
+            result = backend.connect(
+                profile, "pass",
+                two_factor_callback=two_factor_callback,
+            )
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+        assert "cancelled" in (backend._status.error_message or "").lower()
+
+    def test_2fa_no_callback_returns_configure_message(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When SNX requests 2FA but no callback is provided, error must mention Configure."""
+        child = _make_child_mock([0, 5])
+        child.before = "Enter SecurID PASSCODE:"
+        child.after = ""
+
+        with self._patch_pexpect(child):
+            result = backend.connect(profile, "pass")  # no two_factor_callback
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+        assert "Configure 2FA" in (backend._status.error_message or "")
+
+    def test_2fa_loop_limit(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """After _2FA_LOOP_LIMIT (3) rounds, connection is aborted."""
+        # password_prompt=0, then 4 2FA prompts — loop limit (3) kicks in after 3
+        child = _make_child_mock([0, 5, 5, 5, 5])
+        child.before = "OTP:"
+        child.after = ""
+
+        call_count = 0
+
+        def _always_code(prompt_text: str):
+            nonlocal call_count
+            call_count += 1
+            return "000000"
+
+        with self._patch_pexpect(child):
+            result = backend.connect(profile, "pass", two_factor_callback=_always_code)
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+        # Callback must be called at most _2FA_LOOP_LIMIT (3) times
+        assert call_count <= 3
+
+    def test_backward_compat_no_2fa_callback(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Without two_factor_callback and no 2FA prompt, connect succeeds as before."""
+        child = _make_child_mock([0, 0])
+        child.before = "Office Mode IP      : 10.1.1.1\n"
+        child.after = "SNX - Connected.\n"
+
+        with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+            result = backend.connect(profile, "password123")
+
+        assert result is True
+        assert backend._status.state == ConnectionState.CONNECTED
+
+    def test_2fa_regex_exported(self) -> None:
+        """_RE_2FA_ANY must be importable from snx_backend for tests/validation."""
+        assert _RE_2FA_ANY is not None
+        assert _RE_2FA_ANY.search("OTP:")
+        assert not _RE_2FA_ANY.search("Password:")

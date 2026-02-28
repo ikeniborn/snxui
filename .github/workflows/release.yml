@@ -18,10 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read VERSION file
+      - name: Read and validate VERSION file
         id: read_version
         run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          # Validate strict semver: major.minor.patch (digits only, no prefix)
+          if ! printf '%s' "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: VERSION '${VERSION}' is not valid semver (expected major.minor.patch, e.g. 1.2.3)"
+            exit 1
+          fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building release for version: ${VERSION}"
 
@@ -45,9 +50,7 @@ jobs:
           sudo apt-get install -y python3-dbus libdbus-1-dev libglib2.0-dev
 
       - name: Install Python dependencies
-        run: |
-          pip install -e ".[dev]"
-          pip install pytest pytest-cov
+        run: pip install -e ".[dev]"
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
@@ -59,43 +62,29 @@ jobs:
       version: ${{ needs.read-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Inject version into pyproject.toml
         run: |
           VERSION="${{ needs.read-version.outputs.version }}"
-          # Update version field in pyproject.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
-          # Verify injection
-          grep "^version = \"${VERSION}\"" pyproject.toml || {
+          grep -q "^version = \"${VERSION}\"" pyproject.toml || {
             echo "ERROR: version injection failed in pyproject.toml"
             exit 1
           }
-
-      - name: Inject version into setup.py
-        run: |
-          VERSION="${{ needs.read-version.outputs.version }}"
-          # Update version in setup.py
-          sed -i "s/version=\"[^\"]*\"/version=\"${VERSION}\"/" setup.py
-          sed -i "s/version='[^']*'/version='${VERSION}'/" setup.py
-          # Verify injection
-          python3 -c "
-          import ast, sys
-          with open('setup.py') as f:
-              content = f.read()
-          print('setup.py updated successfully')
-          " || { echo "ERROR: setup.py invalid after version injection"; exit 1; }
 
       - name: Update debian/changelog
         run: |
           VERSION="${{ needs.read-version.outputs.version }}"
           MAINTAINER="SNX UI Contributors <snxui@example.com>"
-          DATE=$(date -R)
-          # Generate new changelog entry
-          NEW_ENTRY="snxui (${VERSION}-1) unstable; urgency=low\n\n  * Release ${VERSION}.\n\n -- ${MAINTAINER}  ${DATE}\n\n"
-          # Prepend new entry to existing changelog
-          printf "${NEW_ENTRY}" | cat - packaging/debian/changelog > /tmp/changelog.tmp
+          # Use the commit date (RFC 2822) instead of date -R to keep the
+          # changelog entry deterministic for the same git commit.
+          DATE=$(git log -1 --format='%aD')
+          # Use printf with explicit format args to avoid shell expansion of arbitrary values
+          {
+            printf 'snxui (%s-1) unstable; urgency=low\n\n' "${VERSION}"
+            printf '  * Release %s.\n\n' "${VERSION}"
+            printf ' -- %s  %s\n\n' "${MAINTAINER}" "${DATE}"
+          } | cat - packaging/debian/changelog > /tmp/changelog.tmp
           mv /tmp/changelog.tmp packaging/debian/changelog
 
       - name: Upload modified sources
@@ -104,7 +93,6 @@ jobs:
           name: versioned-sources
           path: |
             pyproject.toml
-            setup.py
             packaging/debian/changelog
 
   build-deb:
@@ -124,28 +112,32 @@ jobs:
           sudo apt-get install -y \
             debhelper \
             devscripts \
+            python3-pip \
             python3-setuptools \
-            python3-all \
+            python3-wheel \
             dh-python
 
       - name: Build DEB package
         run: |
           VERSION="${{ needs.inject-versions.outputs.version }}"
-          # dpkg-buildpackage expects debian/ in CWD
-          # Makefile pattern: cd packaging && dpkg-buildpackage -us -uc -b
+          # dpkg-buildpackage must run from project root with debian/ as a direct subdirectory.
+          # packaging/debian/ cannot be used directly because debian/rules references
+          # source files (pyproject.toml, snxui/) relative to the project root.
           cp -r packaging/debian debian/
           dpkg-buildpackage -us -uc -b
-          # Find and rename the built .deb
-          DEB_FILE=$(ls ../snxui_*_all.deb 2>/dev/null || ls snxui_*_all.deb 2>/dev/null || find . -name "*.deb" | head -1)
-          if [ -n "${DEB_FILE}" ]; then
-            cp "${DEB_FILE}" "snxui_${VERSION}_all.deb"
-            echo "DEB built: snxui_${VERSION}_all.deb"
-          else
-            echo "DEB file not found, checking parent directory..."
-            ls -la ../
-            DEB_FILE=$(ls ../*.deb 2>/dev/null | head -1)
-            [ -n "${DEB_FILE}" ] && cp "${DEB_FILE}" "snxui_${VERSION}_all.deb"
+          # dpkg-buildpackage places output in the parent of the project root
+          PARENT_DIR=$(cd .. && pwd)
+          # Match version with optional debian revision suffix (e.g. 0.1.0-1)
+          DEB_FILE=$(ls "${PARENT_DIR}/snxui_${VERSION}-1_all.deb" 2>/dev/null \
+                  || ls "${PARENT_DIR}/snxui_${VERSION}_all.deb" 2>/dev/null \
+                  || find "${PARENT_DIR}" -maxdepth 1 -name "snxui_${VERSION}*_all.deb" -print -quit)
+          if [ -z "${DEB_FILE}" ]; then
+            echo "ERROR: DEB file not found after build in ${PARENT_DIR}"
+            ls -la "${PARENT_DIR}/"
+            exit 1
           fi
+          cp "${DEB_FILE}" "snxui_${VERSION}_all.deb"
+          echo "DEB built: snxui_${VERSION}_all.deb ($(du -sh "snxui_${VERSION}_all.deb" | cut -f1))"
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -164,54 +156,50 @@ jobs:
         with:
           name: versioned-sources
 
-      - name: Install system dependencies
+      - name: Install build dependencies
+        # gcc + pkg-config + dev headers are required by pip when compiling
+        # PyGObject and dbus-python inside the bundled Python environment.
+        # libdbus-1-dev: required to compile dbus-python (provides dbus/dbus.h).
+        # squashfs-tools is required by appimagetool to create the squashfs layer.
+        # libfuse2 is a fallback; APPIMAGE_EXTRACT_AND_RUN=1 bypasses FUSE at runtime.
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
-            python3-gi \
-            python3-pip \
-            libglib2.0-0 \
+            gcc \
+            pkg-config \
+            libgirepository1.0-dev \
+            libcairo2-dev \
+            libglib2.0-dev \
+            libdbus-1-dev \
             libfuse2 \
-            patchelf
+            squashfs-tools
 
-      - name: Cache linuxdeploy tools
+      - name: Cache AppImage build artefacts (Python standalone + appimagetool)
         uses: actions/cache@v4
-        id: cache-tools
         with:
-          path: ~/.local/bin
-          key: linuxdeploy-tools-v1
-
-      - name: Download linuxdeploy and appimagetool
-        if: steps.cache-tools.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.local/bin
-          # Download linuxdeploy
-          wget -q -O ~/.local/bin/linuxdeploy \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
-          chmod +x ~/.local/bin/linuxdeploy
-          # Download appimagetool
-          wget -q -O ~/.local/bin/appimagetool \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-          chmod +x ~/.local/bin/appimagetool
-
-      - name: Install Python dependencies
-        run: |
-          pip install -e ".[dev]"
+          path: .appimage-cache
+          # Include requirements-appimage.txt so that pinning changes bust the cache.
+          key: appimage-cache-${{ hashFiles('packaging/appimage/build-appimage.sh', 'packaging/appimage/requirements-appimage.txt') }}
 
       - name: Build AppImage
+        # build-appimage.sh handles everything:
+        #   - downloads python-build-standalone into .appimage-cache/
+        #   - installs all Python dependencies into the bundled Python
+        #   - creates AppDir with correct structure
+        #   - downloads appimagetool into .appimage-cache/
+        #   - runs appimagetool to produce snxui-VERSION-x86_64.AppImage
+        # APPIMAGE_EXTRACT_AND_RUN=1 lets AppImage tools run without FUSE on CI.
         env:
           VERSION: ${{ needs.inject-versions.outputs.version }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          # Set APPIMAGE_EXTRACT_AND_RUN for CI (no FUSE)
-          export APPIMAGE_EXTRACT_AND_RUN=1
-
-          # Run the project's build-appimage.sh script
           bash packaging/appimage/build-appimage.sh "${VERSION}"
-
-          # Use appimagetool to create the AppImage from AppDir
-          appimagetool AppDir "snxui-${VERSION}-x86_64.AppImage"
-          echo "AppImage built: snxui-${VERSION}-x86_64.AppImage"
+          if [ ! -f "snxui-${VERSION}-x86_64.AppImage" ]; then
+            echo "ERROR: AppImage not found after build"
+            ls -la
+            exit 1
+          fi
+          echo "AppImage built: snxui-${VERSION}-x86_64.AppImage ($(du -sh "snxui-${VERSION}-x86_64.AppImage" | cut -f1))"
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
@@ -238,44 +226,44 @@ jobs:
           name: appimage
 
       - name: Generate changelog from git log
-        id: changelog
         run: |
           VERSION="${{ needs.inject-versions.outputs.version }}"
           PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           if [ -n "${PREV_TAG}" ]; then
-            COMMITS=$(git log --oneline "${PREV_TAG}..HEAD" 2>/dev/null || git log --oneline -20)
+            COMMITS=$(git log --oneline "${PREV_TAG}..HEAD")
           else
             COMMITS=$(git log --oneline -20)
           fi
-          # Format as markdown list
-          CHANGELOG=$(echo "${COMMITS}" | sed 's/^/- /')
-          # Write to file to handle multiline
-          cat > /tmp/release-notes.md << NOTES
-          ## What's Changed in v${VERSION}
+          # Write release notes with printf to avoid heredoc shell expansion.
+          # Commit messages may contain $VAR or backticks; printf '%s' prints them literally.
+          {
+            printf '## What'"'"'s Changed in v%s\n\n' "${VERSION}"
+            printf '%s\n' "${COMMITS}" | sed 's/^/- /'
+            printf '\n**Full Changelog**: https://github.com/%s/commits/v%s\n' \
+              "${{ github.repository }}" "${VERSION}"
+          } > /tmp/release-notes.md
+          echo "--- Release notes preview ---"
+          cat /tmp/release-notes.md
 
-          ${CHANGELOG}
-
-          **Full Changelog**: https://github.com/${{ github.repository }}/commits/v${VERSION}
-          NOTES
-          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+      - name: Verify release artifacts
+        run: |
+          VERSION="${{ needs.inject-versions.outputs.version }}"
+          for f in "snxui_${VERSION}_all.deb" "snxui-${VERSION}-x86_64.AppImage"; do
+            if [ ! -f "${f}" ]; then
+              echo "ERROR: Missing release artifact: ${f}"
+              ls -la
+              exit 1
+            fi
+            echo "OK: ${f} ($(du -sh "${f}" | cut -f1))"
+          done
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.inject-versions.outputs.version }}"
-          DEB_FILE="snxui_${VERSION}_all.deb"
-          APPIMAGE_FILE="snxui-${VERSION}-x86_64.AppImage"
-
-          # Verify artifacts exist
-          ls -la "${DEB_FILE}" "${APPIMAGE_FILE}" || {
-            echo "ERROR: One or more release artifacts not found"
-            ls -la
-            exit 1
-          }
-
           gh release create "v${VERSION}" \
             --title "snxui v${VERSION}" \
             --notes-file /tmp/release-notes.md \
-            "${DEB_FILE}" \
-            "${APPIMAGE_FILE}"
+            "snxui_${VERSION}_all.deb" \
+            "snxui-${VERSION}-x86_64.AppImage"

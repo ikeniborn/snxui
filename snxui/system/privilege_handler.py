@@ -109,27 +109,10 @@ class PrivilegeHandler:
                 timeout=5,
             )
             output = (result.stdout + result.stderr).strip()
-
-            # Современные версии polkit (122+) используют одно число без точки.
-            # Старые версии (0.105, 0.119, 0.120) — формат major.minor.
-            # Пробуем сначала формат с точкой, потом одиночное число.
-            dot_match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", output)
-            if dot_match:
-                version_str = dot_match.group(0)
-                major = int(dot_match.group(1))
-                minor = int(dot_match.group(2))
-                is_old = (major, minor) < _MIN_POLKIT_VERSION
-            else:
-                # Одиночное число — современный polkit (>= 100 >> 0.119)
-                single_match = re.search(r"\b(\d+)\b", output)
-                if not single_match:
-                    logger.warning("Не удалось распарсить версию polkit из: %r", output)
-                    return None
-                version_str = single_match.group(1)
-                major = int(version_str)
-                # Одиночный номер >= 100 заведомо новее 0.119
-                is_old = major < 100 and (major, 0) < _MIN_POLKIT_VERSION
-
+            parsed = self._parse_polkit_version_string(output)
+            if parsed is None:
+                return None
+            version_str, is_old = parsed
             if is_old:
                 logger.warning(
                     "Версия polkit %s < 0.119. Уязвимость CVE-2021-4034 (PwnKit) "
@@ -138,9 +121,7 @@ class PrivilegeHandler:
                 )
             else:
                 logger.debug("polkit версия %s OK (>= 0.119).", version_str)
-
             return version_str
-
         except FileNotFoundError:
             logger.debug("pkexec не найден при проверке версии.")
             return None
@@ -150,6 +131,38 @@ class PrivilegeHandler:
         except Exception as exc:
             logger.warning("Ошибка при проверке версии polkit: %s", exc)
             return None
+
+    def _parse_polkit_version_string(self, output: str) -> Optional[tuple]:
+        """Распарсить строку вывода pkexec --version.
+
+        Args:
+            output: Объединённый stdout+stderr из ``pkexec --version``.
+
+        Returns:
+            Кортеж ``(version_str, is_old)`` или ``None`` при неудаче.
+            ``is_old`` равно ``True`` если версия < 0.119.
+        """
+        # Современные версии polkit (122+) используют одно число без точки.
+        # Старые версии (0.105, 0.119, 0.120) — формат major.minor.
+        # Пробуем сначала формат с точкой, потом одиночное число.
+        dot_match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", output)
+        if dot_match:
+            version_str = dot_match.group(0)
+            major = int(dot_match.group(1))
+            minor = int(dot_match.group(2))
+            is_old = (major, minor) < _MIN_POLKIT_VERSION
+            return version_str, is_old
+
+        # Одиночное число — современный polkit (>= 100 >> 0.119)
+        single_match = re.search(r"\b(\d+)\b", output)
+        if not single_match:
+            logger.warning("Не удалось распарсить версию polkit из: %r", output)
+            return None
+        version_str = single_match.group(1)
+        major = int(version_str)
+        # Одиночный номер >= 100 заведомо новее 0.119
+        is_old = major < 100 and (major, 0) < _MIN_POLKIT_VERSION
+        return version_str, is_old
 
     def install_policy(self, policy_path: Path) -> bool:
         """Установить polkit .policy файл в системный каталог.

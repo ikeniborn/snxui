@@ -42,7 +42,7 @@ except ImportError:
         "Install with: pip install pexpect"
     )
 
-from .types import ConnectionState, ConnectionStatus, Profile
+from .types import ConnectionState, ConnectionStatus, Profile, TwoFactorCallback
 
 # ---------------------------------------------------------------------------
 # Regex patterns for SNX output
@@ -82,6 +82,38 @@ _RE_OFFICE_IP = re.compile(r"Office\s+Mode\s+IP\s*:\s*(\d+\.\d+\.\d+\.\d+)", re.
 # Disconnection confirmation
 _RE_DISCONNECTED = re.compile(
     r"SNX\s+disconnected|Disconnected\s+successfully|Session\s+terminated",
+    re.IGNORECASE,
+)
+
+# --- 2FA prompts (all use re.IGNORECASE only, no MULTILINE) ---
+
+_RE_2FA_RSA = re.compile(
+    r"Enter\s+SecurID\s+PASSCODE\s*:|SecurID\s+passcode\s*:|PASSCODE\s*:",
+    re.IGNORECASE,
+)
+_RE_2FA_RADIUS = re.compile(
+    r"Enter\s+RADIUS\s+(?:token|passcode)\s*:|RADIUS\s+(?:token|passcode)\s*:"
+    r"|\bToken\s*:",
+    re.IGNORECASE,
+)
+_RE_2FA_CHALLENGE = re.compile(
+    r"Challenge\s*:\s*\S+|Your\s+challenge\s+is\s*:\s*\S+|Enter\s+response\s*:",
+    re.IGNORECASE,
+)
+_RE_2FA_GENERIC = re.compile(
+    r"Enter\s+one.time\s+(?:password|code)\s*:|Verification\s+code\s*:|"
+    r"\bOTP\s*:|Two.factor\s+code\s*:",
+    re.IGNORECASE,
+)
+
+# Объединённый паттерн для expect() списка
+_RE_2FA_ANY = re.compile(
+    r"Enter\s+SecurID\s+PASSCODE\s*:|SecurID\s+passcode\s*:|PASSCODE\s*:|"
+    r"Enter\s+RADIUS\s+(?:token|passcode)\s*:|RADIUS\s+(?:token|passcode)\s*:|"
+    r"\bToken\s*:|"
+    r"Challenge\s*:\s*\S+|Enter\s+response\s*:|"
+    r"Enter\s+one.time\s+(?:password|code)\s*:|Verification\s+code\s*:|"
+    r"\bOTP\s*:|Two.factor\s+code\s*:",
     re.IGNORECASE,
 )
 
@@ -136,6 +168,7 @@ class SNXBackend:
         profile: Profile,
         password: str,
         status_callback: Optional[Callable[[ConnectionStatus], None]] = None,
+        two_factor_callback: Optional[TwoFactorCallback] = None,
     ) -> bool:
         """Connect to the VPN using *profile* and *password*.
 
@@ -145,16 +178,13 @@ class SNXBackend:
         Args:
             profile: The :class:`~snxui.core.types.Profile` to use.
             password: Plaintext password (handled in PTY, never logged).
-            status_callback: Optional callable invoked whenever the
-                :class:`~snxui.core.types.ConnectionStatus` changes.  Called
-                from the monitor thread — ensure it is thread-safe.
+            status_callback: Called from the monitor thread on each status
+                change — must be thread-safe.
+            two_factor_callback: Called when SNX requires a 2FA code;
+                return the code string, or ``None`` to abort.
 
         Returns:
             ``True`` on successful connection, ``False`` otherwise.
-
-        Raises:
-            FileNotFoundError: If the SNX binary cannot be located.
-            RuntimeError: If pexpect is not installed.
         """
         if pexpect is None:
             raise RuntimeError(
@@ -163,147 +193,300 @@ class SNXBackend:
             )
 
         binary = self._find_snx_binary()
-
         with self._lock:
-            self._update_status(
-                ConnectionState.CONNECTING,
-                profile=profile,
-                callback=status_callback,
+            snapshot = self._update_status(
+                ConnectionState.CONNECTING, profile=profile,
             )
+        self._invoke_callback(status_callback, snapshot)
 
         args = self._build_args(profile)
-        cmd = f"{binary} {' '.join(args)}"
-        logger.info("Launching SNX: %s", cmd)
+        logger.info("Launching SNX: %s %s", binary, " ".join(args))
 
         child = None  # Initialise before try so except can safely close it.
         try:
             child = pexpect.spawn(
-                binary,
-                args,
-                encoding="utf-8",
-                timeout=_CONNECT_TIMEOUT,
-                echo=False,
+                binary, args, encoding="utf-8", timeout=_CONNECT_TIMEOUT, echo=False,
             )
+            return self._run_connect_session(
+                child, password, profile, status_callback, two_factor_callback,
+            )
+        except pexpect.exceptions.ExceptionPexpect as exc:
+            return self._handle_pexpect_error(exc, child, profile, status_callback)
 
-            # Wait for the password prompt.
-            # Pass compiled regex objects directly so that pexpect uses them
-            # as-is (preserving re.IGNORECASE).  Passing .pattern strings
-            # causes pexpect to recompile with re.DOTALL only, silently
-            # dropping the IGNORECASE flag — SNX output like
-            # "authentication failed" (all-lowercase) would then go
-            # unmatched and be treated as an unexpected EOF/TIMEOUT.
+    def _handle_pexpect_error(
+        self,
+        exc: "pexpect.exceptions.ExceptionPexpect",
+        child: Optional["pexpect.spawn"],
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """Clean up PTY and record error state after a pexpect exception."""
+        logger.exception("pexpect error during connect: %s", exc)
+        # Close the PTY child if it was successfully spawned before the
+        # exception.  Without this, the snx process and its PTY file
+        # descriptor would leak on every pexpect error.
+        if child is not None:
+            try:
+                child.close()
+            except Exception:
+                logger.debug("PTY close failed during error cleanup.", exc_info=True)
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message=f"pexpect error: {exc}",
+            )
+        self._invoke_callback(callback, snapshot)
+        return False
+
+    def _run_connect_session(
+        self,
+        child: "pexpect.spawn",
+        password: str,
+        profile: Profile,
+        status_callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback],
+    ) -> bool:
+        """Execute the PTY interaction sequence after spawning SNX.
+
+        Must be called from within the ``try`` block in :meth:`connect`
+        so that pexpect exceptions propagate to the outer handler.
+        """
+        early = self._await_password_prompt(child, profile, status_callback)
+        if early is not None:
+            return early
+        logger.debug("Password prompt received, sending credentials.")
+        child.sendline(password)
+        return self._handle_post_password(child, profile, status_callback, two_factor_callback)
+
+    def _await_password_prompt(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> Optional[bool]:
+        """Wait for SNX to show the password prompt.
+
+        Pass compiled regex objects directly so that pexpect uses them
+        as-is (preserving re.IGNORECASE).  Passing .pattern strings
+        causes pexpect to recompile with re.DOTALL only, silently
+        dropping the IGNORECASE flag.
+
+        Returns:
+            ``None`` if the password prompt was received (caller should
+            send the password and continue).  ``True`` if SNX reported
+            already-connected (caller should return ``True``).  ``False``
+            if connection failed before the prompt (caller should return
+            ``False``).
+        """
+        idx = child.expect(
+            [_RE_PASSWORD, _RE_ALREADY, _RE_CONN_FAILED, pexpect.EOF, pexpect.TIMEOUT],
+            timeout=_PASSWORD_TIMEOUT,
+        )
+
+        if idx == 1:
+            return self._handle_already_connected(child, profile, callback)
+        if idx in (2, 3, 4):
+            return self._handle_pre_prompt_failure(child, profile, callback)
+        # idx == 0: password prompt received.
+        return None
+
+    def _handle_already_connected(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """Handle SNX reporting already-connected state."""
+        logger.info("SNX reports already connected.")
+        status = self.get_status()
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.CONNECTED,
+                profile=profile,
+                ip_address=status.ip_address,
+                interface=status.interface,
+                connected_at=time.time(),
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return True
+
+    def _handle_pre_prompt_failure(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """Handle SNX failure before reaching the password prompt."""
+        output = getattr(child, "before", "") or ""
+        logger.error("SNX connection failed before password prompt. Output: %r", output)
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message="Connection failed before password prompt.",
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return False
+
+    def _finish_connected(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        full_output: str,
+    ) -> bool:
+        """Finalize a successful connection: update status, start monitor, close PTY."""
+        ip_address = self._parse_office_ip(full_output)
+        logger.info("SNX connected. Office IP: %s", ip_address or "unknown")
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.CONNECTED,
+                profile=profile,
+                ip_address=ip_address,
+                interface="tunsnx",
+                connected_at=time.time(),
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        self._start_monitor(profile, callback)
+        return True
+
+    def _handle_post_password(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback] = None,
+    ) -> bool:
+        """Wait for connect confirmation after the password was sent.
+
+        Supports an interactive 2FA loop: if SNX presents a 2FA prompt,
+        *two_factor_callback* is invoked to obtain the code.  The loop runs
+        at most ``_2FA_LOOP_LIMIT`` times.
+
+        Returns:
+            ``True`` on successful connection, ``False`` otherwise.
+        """
+        _2FA_LOOP_LIMIT = 3
+
+        for _round in range(_2FA_LOOP_LIMIT):
             idx = child.expect(
                 [
-                    _RE_PASSWORD,
-                    _RE_ALREADY,
-                    _RE_CONN_FAILED,
-                    pexpect.EOF,
-                    pexpect.TIMEOUT,
-                ],
-                timeout=_PASSWORD_TIMEOUT,
-            )
-
-            if idx == 1:
-                # Already connected — treat as success.
-                logger.info("SNX reports already connected.")
-                status = self.get_status()
-                with self._lock:
-                    self._update_status(
-                        ConnectionState.CONNECTED,
-                        profile=profile,
-                        ip_address=status.ip_address,
-                        interface=status.interface,
-                        connected_at=time.time(),
-                        callback=status_callback,
-                    )
-                child.close()
-                return True
-
-            if idx in (2, 3, 4):
-                output = getattr(child, "before", "") or ""
-                logger.error("SNX connection failed before password prompt. Output: %r", output)
-                with self._lock:
-                    self._update_status(
-                        ConnectionState.ERROR,
-                        profile=profile,
-                        error_message="Connection failed before password prompt.",
-                        callback=status_callback,
-                    )
-                child.close()
-                return False
-
-            # idx == 0: password prompt received — send password.
-            logger.debug("Password prompt received, sending credentials.")
-            child.sendline(password)
-
-            # Wait for success or failure.
-            idx2 = child.expect(
-                [
-                    _RE_CONNECTED,
-                    _RE_AUTH_FAILED,
-                    _RE_CONN_FAILED,
-                    pexpect.EOF,
-                    pexpect.TIMEOUT,
+                    _RE_CONNECTED,    # 0
+                    _RE_AUTH_FAILED,  # 1
+                    _RE_CONN_FAILED,  # 2
+                    pexpect.EOF,      # 3
+                    pexpect.TIMEOUT,  # 4
+                    _RE_2FA_ANY,      # 5
                 ],
                 timeout=_CONNECT_TIMEOUT,
             )
+            full_output = (child.before or "") + (
+                child.after if isinstance(child.after, str) else ""
+            )
 
-            full_output = (child.before or "") + (child.after or "")
+            if idx == 0:
+                return self._finish_connected(child, profile, callback, full_output)
 
-            if idx2 == 0:
-                # Success — try to parse the Office Mode IP.
-                ip_address = self._parse_office_ip(full_output)
-                logger.info("SNX connected. Office IP: %s", ip_address or "unknown")
-                with self._lock:
-                    self._update_status(
-                        ConnectionState.CONNECTED,
-                        profile=profile,
-                        ip_address=ip_address,
-                        interface="tunsnx",
-                        connected_at=time.time(),
-                        callback=status_callback,
-                    )
-                child.close()
-                self._start_monitor(profile, status_callback)
-                return True
+            if idx in (1, 2, 3, 4):
+                return self._handle_connect_failure(child, profile, callback, idx, full_output)
 
-            # Failure paths
-            error_map = {
-                1: "Authentication failed — check username and password.",
-                2: "Connection failed — check server address and network.",
-                3: "Unexpected SNX process termination.",
-                4: "SNX timed out waiting for connection confirmation.",
-            }
-            error_msg = error_map.get(idx2, "Unknown SNX error.")
-            logger.error("SNX connect failed (idx=%d): %s. Output: %r", idx2, error_msg, full_output)
+            # idx == 5: 2FA prompt
+            sent = self._handle_2fa_prompt(child, profile, callback, two_factor_callback, full_output)
+            if sent is False:
+                return False
+            # sent is True → code was sent, continue loop
+
+        return self._handle_2fa_limit_exceeded(child, profile, callback)
+
+    def _handle_connect_failure(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        idx: int,
+        full_output: str,
+    ) -> bool:
+        """Record ERROR state for a non-2FA connect failure."""
+        error_map = {
+            1: "Authentication failed — check username and password.",
+            2: "Connection failed — check server address and network.",
+            3: "Unexpected SNX process termination.",
+            4: "SNX timed out waiting for connection confirmation.",
+        }
+        error_msg = error_map.get(idx, "Unknown SNX error.")
+        logger.error("SNX connect failed (idx=%d): %s. Output: %r", idx, error_msg, full_output)
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR, profile=profile, error_message=error_msg,
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return False
+
+    def _handle_2fa_prompt(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback],
+        full_output: str,
+    ) -> bool:
+        """Handle a 2FA challenge prompt from SNX.
+
+        Returns:
+            ``True`` if the code was sent (loop should continue).
+            ``False`` if an error was set and the loop should abort.
+        """
+        if two_factor_callback is None:
+            logger.error("SNX requested 2FA but no two_factor_callback provided.")
             with self._lock:
-                self._update_status(
+                snapshot = self._update_status(
                     ConnectionState.ERROR,
                     profile=profile,
-                    error_message=error_msg,
-                    callback=status_callback,
+                    error_message="VPN requires two-factor authentication. "
+                                  "Configure 2FA method in profile settings.",
                 )
             child.close()
+            self._invoke_callback(callback, snapshot)
             return False
 
-        except pexpect.exceptions.ExceptionPexpect as exc:
-            logger.exception("pexpect error during connect: %s", exc)
-            # Close the PTY child if it was successfully spawned before the
-            # exception.  Without this, the snx process and its PTY file
-            # descriptor would leak on every pexpect error.
-            if child is not None:
-                try:
-                    child.close()
-                except Exception:
-                    pass
+        code = two_factor_callback(full_output)  # Блокирует bg thread
+        if code is None:
+            logger.info("User cancelled 2FA input.")
             with self._lock:
-                self._update_status(
+                snapshot = self._update_status(
                     ConnectionState.ERROR,
                     profile=profile,
-                    error_message=f"pexpect error: {exc}",
-                    callback=status_callback,
+                    error_message="Two-factor authentication cancelled.",
                 )
+            child.close()
+            self._invoke_callback(callback, snapshot)
             return False
+
+        child.sendline(code)
+        return True
+
+    def _handle_2fa_limit_exceeded(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """Record ERROR when the 2FA loop limit is exceeded."""
+        logger.error("2FA loop limit exceeded.")
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message="Too many 2FA rounds — connection aborted.",
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return False
 
     def disconnect(self) -> bool:
         """Disconnect the active SNX VPN session.
@@ -322,62 +505,71 @@ class SNXBackend:
 
         binary = self._find_snx_binary()
         logger.info("Disconnecting SNX via: %s -d", binary)
-
         self._stop_monitor()
 
-        child = None  # Initialise before try so except can safely close it.
         try:
-            child = pexpect.spawn(
-                binary,
-                ["-d"],
-                encoding="utf-8",
-                timeout=_DISCONNECT_TIMEOUT,
-                echo=False,
-            )
-            idx = child.expect(
-                [
-                    _RE_DISCONNECTED,
-                    pexpect.EOF,
-                    pexpect.TIMEOUT,
-                ],
-                timeout=_DISCONNECT_TIMEOUT,
-            )
-            child.close()
-
-            if idx == 0:
-                logger.info("SNX disconnected successfully.")
-                with self._lock:
-                    self._update_status(ConnectionState.DISCONNECTED)
-                return True
-
-            # EOF / TIMEOUT — check if tunsnx is actually gone.
-            if not self._tunsnx_exists():
-                logger.info("tunsnx gone after snx -d (no explicit confirmation).")
-                with self._lock:
-                    self._update_status(ConnectionState.DISCONNECTED)
-                return True
-
-            logger.warning("SNX disconnect command returned unexpectedly (idx=%d).", idx)
-            with self._lock:
-                self._update_status(
-                    ConnectionState.ERROR,
-                    error_message="Disconnect may not have succeeded — check SNX status.",
-                )
-            return False
-
+            idx = self._run_snx_disconnect(binary)
+            return self._verify_disconnect_result(idx)
         except pexpect.exceptions.ExceptionPexpect as exc:
             logger.exception("pexpect error during disconnect: %s", exc)
-            if child is not None:
-                try:
-                    child.close()
-                except Exception:
-                    pass
             with self._lock:
                 self._update_status(
                     ConnectionState.ERROR,
                     error_message=f"Disconnect error: {exc}",
                 )
             return False
+
+    def _run_snx_disconnect(self, binary: str) -> int:
+        """Spawn ``snx -d``, wait for the result, and close the PTY.
+
+        The PTY child is always closed in the ``finally`` block — even if
+        ``child.expect`` raises a pexpect exception — so the caller never
+        needs to manage the child's lifetime.
+
+        Returns:
+            The index returned by ``child.expect``:
+            0 = disconnect confirmed, 1 = EOF, 2 = TIMEOUT.
+        """
+        child = pexpect.spawn(
+            binary, ["-d"], encoding="utf-8", timeout=_DISCONNECT_TIMEOUT, echo=False,
+        )
+        try:
+            return child.expect(
+                [_RE_DISCONNECTED, pexpect.EOF, pexpect.TIMEOUT],
+                timeout=_DISCONNECT_TIMEOUT,
+            )
+        finally:
+            try:
+                child.close()
+            except Exception:
+                logger.debug("PTY close failed during disconnect.", exc_info=True)
+
+    def _verify_disconnect_result(self, idx: int) -> bool:
+        """Interpret the pexpect index from ``_run_snx_disconnect``.
+
+        Returns:
+            ``True`` if the VPN is confirmed disconnected, ``False`` on error.
+        """
+        if idx == 0:
+            logger.info("SNX disconnected successfully.")
+            with self._lock:
+                self._update_status(ConnectionState.DISCONNECTED)
+            return True
+
+        # EOF / TIMEOUT — check if tunsnx is actually gone.
+        if not self._tunsnx_exists():
+            logger.info("tunsnx gone after snx -d (no explicit confirmation).")
+            with self._lock:
+                self._update_status(ConnectionState.DISCONNECTED)
+            return True
+
+        logger.warning("SNX disconnect command returned unexpectedly (idx=%d).", idx)
+        with self._lock:
+            self._update_status(
+                ConnectionState.ERROR,
+                error_message="Disconnect may not have succeeded — check SNX status.",
+            )
+        return False
 
     def get_status(self) -> ConnectionStatus:
         """Return a live snapshot of the current connection status.
@@ -394,32 +586,72 @@ class SNXBackend:
         ip = self._get_tunsnx_ip() if exists else None
 
         with self._lock:
-            # Update state and build the snapshot in a single critical section.
+            # Update state and return snapshot in a single critical section.
             # Previously three separate "with self._lock:" blocks created TOCTOU
             # windows where another thread (e.g. disconnect()) could modify
-            # self._status between the state-update block and the snapshot block,
-            # or where a tunsnx check outside the lock could race with a
-            # concurrent disconnect() that already set state to DISCONNECTED —
-            # causing get_status() to incorrectly flip state back to CONNECTED.
-            if exists:
-                if self._status.state not in (
-                    ConnectionState.CONNECTED,
-                    ConnectionState.CONNECTING,
-                ):
-                    # Tunnel exists but we didn't track it — update state.
-                    self._status = ConnectionStatus(
-                        state=ConnectionState.CONNECTED,
-                        ip_address=ip,
-                        interface="tunsnx",
-                    )
-                else:
-                    self._status.ip_address = ip
-            else:
-                if self._status.state == ConnectionState.CONNECTED:
-                    # Tunnel disappeared unexpectedly.
-                    self._status = ConnectionStatus(state=ConnectionState.DISCONNECTED)
+            # self._status between the state-update block and the snapshot block.
+            self._reconcile_tunsnx_status(exists, ip)
+            return ConnectionStatus(
+                state=self._status.state,
+                profile=self._status.profile,
+                ip_address=self._status.ip_address,
+                interface=self._status.interface,
+                connected_at=self._status.connected_at,
+                error_message=self._status.error_message,
+            )
 
-            # Return a shallow copy to prevent external mutation.
+    def _reconcile_tunsnx_status(self, exists: bool, ip: Optional[str]) -> None:
+        """Update internal state to match the current tunsnx interface status.
+
+        Must be called with ``self._lock`` held.
+
+        Args:
+            exists: Whether the tunsnx interface currently exists.
+            ip: IP address of the interface, or None if not present.
+        """
+        if exists:
+            if self._status.state not in (
+                ConnectionState.CONNECTED,
+                ConnectionState.CONNECTING,
+            ):
+                # Tunnel exists but we didn't track it — update state.
+                self._status = ConnectionStatus(
+                    state=ConnectionState.CONNECTED,
+                    ip_address=ip,
+                    interface="tunsnx",
+                )
+            else:
+                # Update the IP without changing other fields.
+                # Consistent with _update_status(): always replace the
+                # object instead of mutating it in-place.
+                self._status = ConnectionStatus(
+                    state=self._status.state,
+                    profile=self._status.profile,
+                    ip_address=ip,
+                    interface=self._status.interface,
+                    connected_at=self._status.connected_at,
+                    error_message=self._status.error_message,
+                )
+        else:
+            if self._status.state == ConnectionState.CONNECTED:
+                # Tunnel disappeared unexpectedly.
+                self._status = ConnectionStatus(state=ConnectionState.DISCONNECTED)
+
+    def get_cached_status(self) -> ConnectionStatus:
+        """Return the cached status snapshot without probing the ``tunsnx`` interface.
+
+        Unlike :meth:`get_status`, this method performs no subprocess calls.
+        It is safe to call from a background thread immediately after
+        :meth:`disconnect` returns ``False``: at that point the tunnel is still
+        up, so :meth:`get_status` would override the ERROR state with CONNECTED.
+        Using the cached snapshot preserves the error message set by
+        :meth:`disconnect` internally.
+
+        Returns:
+            A fresh :class:`~snxui.core.types.ConnectionStatus` copy of the
+            current internal state.
+        """
+        with self._lock:
             return ConnectionStatus(
                 state=self._status.state,
                 profile=self._status.profile,
@@ -591,35 +823,28 @@ class SNXBackend:
             if not self._tunsnx_exists():
                 logger.warning("tunsnx interface disappeared — connection lost.")
                 with self._lock:
-                    self._update_status(
+                    snapshot = self._update_status(
                         ConnectionState.DISCONNECTED,
                         profile=profile,
                         error_message="VPN connection dropped unexpectedly.",
-                        callback=callback,
                     )
+                self._invoke_callback(callback, snapshot)
                 break
             # Refresh IP (may change on rekey).
             ip = self._get_tunsnx_ip()
+            ip_snapshot: Optional[ConnectionStatus] = None
             with self._lock:
                 if self._status.ip_address != ip:
                     logger.debug("Tunnel IP changed to %s", ip)
-                    self._status.ip_address = ip
-                    if callback:
-                        # Build snapshot inside the lock without calling
-                        # get_status(), which would try to re-acquire self._lock
-                        # (threading.Lock is not reentrant → deadlock).
-                        snapshot = ConnectionStatus(
-                            state=self._status.state,
-                            profile=self._status.profile,
-                            ip_address=self._status.ip_address,
-                            interface=self._status.interface,
-                            connected_at=self._status.connected_at,
-                            error_message=self._status.error_message,
-                        )
-                        try:
-                            callback(snapshot)
-                        except Exception:  # noqa: BLE001
-                            logger.exception("Exception in status callback.")
+                    ip_snapshot = self._update_status(
+                        ConnectionState.CONNECTED,
+                        profile=self._status.profile,
+                        ip_address=ip,
+                        interface=self._status.interface,
+                        connected_at=self._status.connected_at,
+                    )
+            if ip_snapshot is not None:
+                self._invoke_callback(callback, ip_snapshot)
         logger.debug("Monitor loop exited.")
 
     # ------------------------------------------------------------------
@@ -635,13 +860,15 @@ class SNXBackend:
         interface: Optional[str] = None,
         connected_at: Optional[float] = None,
         error_message: Optional[str] = None,
-        callback: Optional[Callable[[ConnectionStatus], None]] = None,
-    ) -> None:
-        """Update internal status and optionally invoke the callback.
+    ) -> ConnectionStatus:
+        """Update internal status and return a snapshot for callback dispatch.
 
-        Must be called with :attr:`_lock` held.
+        Must be called with :attr:`_lock` held.  The returned snapshot
+        **must** be passed to the status callback *outside* the lock to
+        avoid deadlocks caused by re-entrant lock acquisition inside the
+        callback.
         """
-        self._status = ConnectionStatus(
+        new = ConnectionStatus(
             state=state,
             profile=profile or self._status.profile,
             ip_address=ip_address,
@@ -649,15 +876,24 @@ class SNXBackend:
             connected_at=connected_at,
             error_message=error_message,
         )
+        self._status = new
+        # Return a copy so callers cannot inadvertently mutate self._status.
+        return ConnectionStatus(
+            state=new.state,
+            profile=new.profile,
+            ip_address=new.ip_address,
+            interface=new.interface,
+            connected_at=new.connected_at,
+            error_message=new.error_message,
+        )
+
+    @staticmethod
+    def _invoke_callback(
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        snapshot: ConnectionStatus,
+    ) -> None:
+        """Invoke *callback* with *snapshot* outside any lock."""
         if callback:
-            snapshot = ConnectionStatus(
-                state=self._status.state,
-                profile=self._status.profile,
-                ip_address=self._status.ip_address,
-                interface=self._status.interface,
-                connected_at=self._status.connected_at,
-                error_message=self._status.error_message,
-            )
             try:
                 callback(snapshot)
             except Exception:  # noqa: BLE001

@@ -149,6 +149,41 @@ class TestSerialisation:
         assert isinstance(profiles[0].id, str)
         assert profiles[0].id  # non-empty
 
+    def test_profile_from_dict_nonnumeric_ssl_port_falls_back_to_443(self) -> None:
+        """ValueError from int("not_a_number") must silently reset ssl_port to 443.
+
+        Exercises the ``except (TypeError, ValueError)`` branch in
+        ``_profile_from_dict`` (profile_manager.py lines 76-79).  Without the
+        except clause a corrupted profiles.json would crash on load instead of
+        recovering gracefully.
+        """
+        d = {
+            "id": "abc",
+            "name": "x",
+            "server": "s",
+            "username": "u",
+            "ssl_port": "not_a_number",  # str → int("not_a_number") raises ValueError
+        }
+        p = _profile_from_dict(d)
+        assert p.ssl_port == 443
+
+    def test_profile_from_dict_null_ssl_port_falls_back_to_443(self) -> None:
+        """TypeError from int(None) must silently reset ssl_port to 443.
+
+        Exercises the same ``except (TypeError, ValueError)`` branch as
+        ``test_profile_from_dict_nonnumeric_ssl_port_falls_back_to_443`` but
+        via a JSON null value (``"ssl_port": null``) which passes None to int().
+        """
+        d = {
+            "id": "abc",
+            "name": "x",
+            "server": "s",
+            "username": "u",
+            "ssl_port": None,  # None → int(None) raises TypeError
+        }
+        p = _profile_from_dict(d)
+        assert p.ssl_port == 443
+
     def test_profile_from_dict_empty_id_gets_uuid(self, tmp_pm: ProfileManager) -> None:
         """Profile with 'id': '' must get a fresh UUID — empty string id
         cannot be matched against any UUID key in the profiles dict."""
@@ -324,3 +359,180 @@ class TestDefault:
 
     def test_get_default_empty_store(self, tmp_pm: ProfileManager) -> None:
         assert tmp_pm.get_default() is None
+
+
+# ---------------------------------------------------------------------------
+# 2FA fields — serialisation and migration
+# ---------------------------------------------------------------------------
+
+
+from snxui.core.types import TwoFactorMethod  # noqa: E402 (append to file)
+
+
+class TestTwoFactorSerialization:
+    def test_serialize_two_factor_method_totp(self, sample_profile: Profile) -> None:
+        """Profile with TOTP method must round-trip through to/from dict."""
+        sample_profile.two_factor_method = TwoFactorMethod.TOTP
+        sample_profile.save_totp_secret = True
+        d = _profile_to_dict(sample_profile)
+        assert d["two_factor_method"] == "totp"
+        assert d["save_totp_secret"] is True
+
+        restored = _profile_from_dict(d)
+        assert restored.two_factor_method == TwoFactorMethod.TOTP
+        assert restored.save_totp_secret is True
+
+    def test_serialize_default_two_factor_method(self, sample_profile: Profile) -> None:
+        """Default (NONE) method must serialize as 'none'."""
+        d = _profile_to_dict(sample_profile)
+        assert d["two_factor_method"] == "none"
+        assert d["save_totp_secret"] is False
+
+    def test_deserialize_all_two_factor_methods(self) -> None:
+        """All TwoFactorMethod values must round-trip correctly."""
+        base_dict = {
+            "id": "abc",
+            "name": "test",
+            "server": "s",
+            "username": "u",
+            "ssl_port": 443,
+            "ca_list": "/etc/ssl/certs",
+            "certificate": None,
+            "reauth": True,
+            "save_password": False,
+            "cipher": None,
+            "save_totp_secret": False,
+        }
+        for method in TwoFactorMethod:
+            d = {**base_dict, "two_factor_method": method.value}
+            restored = _profile_from_dict(d)
+            assert restored.two_factor_method == method, f"Failed for method {method}"
+
+    def test_unknown_2fa_method_defaults_to_none(self) -> None:
+        """An unrecognised 2FA method value must default to NONE without raising."""
+        d = {
+            "id": "abc",
+            "name": "x",
+            "server": "s",
+            "username": "u",
+            "ssl_port": 443,
+            "ca_list": "/etc/ssl/certs",
+            "certificate": None,
+            "reauth": True,
+            "save_password": False,
+            "cipher": None,
+            "two_factor_method": "foobar",
+            "save_totp_secret": False,
+        }
+        restored = _profile_from_dict(d)
+        assert restored.two_factor_method == TwoFactorMethod.NONE
+
+
+class TestMigrationV1ToV2:
+    def test_migration_adds_2fa_defaults(self, tmp_pm: ProfileManager) -> None:
+        """A v1 profiles.json without 2FA fields must gain defaults after migration."""
+        # Write a v1 file manually (no two_factor_method, no save_totp_secret)
+        v1_data = {
+            "version": 1,
+            "default_id": "pid-1",
+            "profiles": {
+                "pid-1": {
+                    "id": "pid-1",
+                    "name": "Old VPN",
+                    "server": "vpn.example.com",
+                    "username": "alice",
+                    "ssl_port": 443,
+                    "ca_list": "/etc/ssl/certs",
+                    "certificate": None,
+                    "reauth": True,
+                    "save_password": False,
+                    "cipher": None,
+                }
+            },
+        }
+        tmp_pm._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_pm._path.write_text(json.dumps(v1_data), encoding="utf-8")
+
+        # Load via ProfileManager — migration must run
+        profiles = tmp_pm.list_all()
+        assert len(profiles) == 1
+        p = profiles[0]
+        assert p.two_factor_method == TwoFactorMethod.NONE
+        assert p.save_totp_secret is False
+
+    def test_migration_updates_version_in_file(self, tmp_pm: ProfileManager) -> None:
+        """After migration, the saved file must have version=2."""
+        v1_data = {
+            "version": 1,
+            "default_id": None,
+            "profiles": {},
+        }
+        tmp_pm._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_pm._path.write_text(json.dumps(v1_data), encoding="utf-8")
+
+        # Any operation that loads-and-saves migrates the file
+        profile = Profile(name="New", server="vpn.example.com", username="bob")
+        tmp_pm.create(profile)
+
+        saved = json.loads(tmp_pm._path.read_text(encoding="utf-8"))
+        assert saved["version"] == 2
+
+    def test_v2_file_not_re_migrated(self, tmp_pm: ProfileManager) -> None:
+        """A v2 file must load without triggering migration logic."""
+        from snxui.core.profile_manager import _FILE_FORMAT_VERSION
+        assert _FILE_FORMAT_VERSION == 2
+
+        profile = Profile(
+            name="Current",
+            server="vpn.example.com",
+            username="carol",
+            two_factor_method=TwoFactorMethod.TOTP,
+            save_totp_secret=True,
+        )
+        tmp_pm.create(profile)
+
+        # Reload
+        loaded = tmp_pm.get(profile.id)
+        assert loaded is not None
+        assert loaded.two_factor_method == TwoFactorMethod.TOTP
+        assert loaded.save_totp_secret is True
+
+
+# ---------------------------------------------------------------------------
+# validate() — ssl_port range check
+# ---------------------------------------------------------------------------
+
+
+class TestValidateSslPort:
+    def test_valid_port_443_passes(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=443)
+        tmp_pm.validate(p)  # must not raise
+
+    def test_valid_port_boundary_1_passes(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=1)
+        tmp_pm.validate(p)  # must not raise
+
+    def test_valid_port_boundary_65535_passes(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=65535)
+        tmp_pm.validate(p)  # must not raise
+
+    def test_port_zero_raises(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=0)
+        with pytest.raises(ValueError, match="ssl_port"):
+            tmp_pm.validate(p)
+
+    def test_port_65536_raises(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=65536)
+        with pytest.raises(ValueError, match="ssl_port"):
+            tmp_pm.validate(p)
+
+    def test_port_minus_1_raises(self, tmp_pm: ProfileManager) -> None:
+        p = Profile(name="x", server="s", username="u", ssl_port=-1)
+        with pytest.raises(ValueError, match="ssl_port"):
+            tmp_pm.validate(p)
+
+    def test_create_with_invalid_port_raises(self, tmp_pm: ProfileManager) -> None:
+        """validate() is called inside create(), so an invalid port must prevent persistence."""
+        p = Profile(name="x", server="s", username="u", ssl_port=99999)
+        with pytest.raises(ValueError, match="ssl_port"):
+            tmp_pm.create(p)

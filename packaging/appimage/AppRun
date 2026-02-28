@@ -1,13 +1,40 @@
 #!/bin/bash
-# AppImage entry point for snxui
+# AppRun — шаблон точки входа AppImage для snxui.
+#
+# ВНИМАНИЕ: этот файл НЕ копируется напрямую в AppDir.
+# build-appimage.sh генерирует AppRun динамически (с актуальной
+# версией Python), поэтому содержимое этого файла служит
+# только документацией / образцом.
+#
+# Реальный AppRun создаётся функцией install_apprun() в build-appimage.sh.
+
 SELF=$(readlink -f "$0")
 HERE=${SELF%/*}
 
-# Add bundled libraries to paths
-export PYTHONPATH="${HERE}/usr/lib/python3/dist-packages:${PYTHONPATH}"
-export GI_TYPELIB_PATH="${HERE}/usr/lib/girepository-1.0:${GI_TYPELIB_PATH}"
-export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
-export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS}"
+PYTHON_XY="3.11"  # подставляется при генерации
 
-# Launch the application
+# ---------- Python окружение ------------------------------------------------
+export PYTHONHOME="${HERE}/usr"
+export PYTHONPATH="${HERE}/usr/lib/python${PYTHON_XY}/site-packages"
+
+# ---------- Нативные .so (libpython, PyGObject, dbus-python) ----------------
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+
+# ---------- GI typelibs -----------------------------------------------------
+# Системные пути ПЕРВЫМИ — GTK4/Adw typelibs берутся из системы.
+# Бандленные GLib/GObject/Gio — запасной вариант.
+_sys_gi=""
+for _d in \
+    "/usr/lib/$(uname -m)-linux-gnu/girepository-1.0" \
+    "/usr/lib64/girepository-1.0"                      \
+    "/usr/lib/girepository-1.0"; do
+    [ -d "${_d}" ] && _sys_gi="${_sys_gi}:${_d}"
+done
+export GI_TYPELIB_PATH="${_sys_gi}:${HERE}/usr/lib/girepository-1.0:${GI_TYPELIB_PATH:-}"
+unset _sys_gi _d
+
+# ---------- XDG данные ------------------------------------------------------
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# ---------- Запуск ----------------------------------------------------------
 exec "${HERE}/usr/bin/python3" -m snxui.app "$@"

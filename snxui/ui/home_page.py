@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from snxui.core import ProfileManager, CredentialStore, SNXBackend
-    from snxui.core.types import ConnectionStatus, Profile
+    from snxui.core.types import ConnectionStatus, Profile, TwoFactorCallback
 
 logger = logging.getLogger(__name__)
 
@@ -71,39 +71,36 @@ class HomePage:
 
     def _build_widget(self) -> None:
         """Build the page widget tree."""
-        # Root: scrollable preferences page.
         self._page = Adw.PreferencesPage()
+        self._page.add(self._build_status_group())
+        self._page.add(self._build_profile_group())
+        self._page.add(self._build_action_group())
 
-        # ── Status group ─────────────────────────────────────────────
+    def _build_status_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the status display group."""
         status_group = Adw.PreferencesGroup()
-        self._page.add(status_group)
 
-        # Status icon.
         self._status_icon = Gtk.Image()
         self._status_icon.set_icon_name("network-offline-symbolic")
         self._status_icon.set_pixel_size(64)
         self._status_icon.set_margin_top(24)
         self._status_icon.set_margin_bottom(8)
 
-        # Status label.
         self._status_label = Gtk.Label(label="Disconnected")
         self._status_label.add_css_class("title-2")
         self._status_label.set_margin_bottom(4)
 
-        # IP / server info (hidden when disconnected).
         self._info_label = Gtk.Label(label="")
         self._info_label.add_css_class("caption")
         self._info_label.set_opacity(0.6)
         self._info_label.set_margin_bottom(16)
         self._info_label.set_visible(False)
 
-        # Spinner.
         self._spinner = Gtk.Spinner()
         self._spinner.set_size_request(32, 32)
         self._spinner.set_margin_bottom(8)
         self._spinner.set_visible(False)
 
-        # Pack status elements into a vertical box.
         status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         status_box.set_halign(Gtk.Align.CENTER)
         status_box.append(self._status_icon)
@@ -111,12 +108,12 @@ class HomePage:
         status_box.append(self._info_label)
         status_box.append(self._spinner)
         status_group.add(status_box)
+        return status_group
 
-        # ── Profile group ─────────────────────────────────────────────
+    def _build_profile_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the profile selection group."""
         profile_group = Adw.PreferencesGroup(title="Connection Profile")
-        self._page.add(profile_group)
 
-        # Profile drop-down.
         self._profile_model = Gtk.StringList()
         self._profile_dropdown = Gtk.DropDown(model=self._profile_model)
         self._profile_dropdown.set_margin_start(16)
@@ -124,12 +121,12 @@ class HomePage:
         self._profile_dropdown.set_margin_top(8)
         self._profile_dropdown.set_margin_bottom(8)
         profile_group.add(self._profile_dropdown)
+        return profile_group
 
-        # ── Action group ──────────────────────────────────────────────
+    def _build_action_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the connect/disconnect action group."""
         action_group = Adw.PreferencesGroup()
-        self._page.add(action_group)
 
-        # Connect / Disconnect button.
         self._connect_btn = Gtk.Button(label="Connect")
         self._connect_btn.add_css_class("suggested-action")
         self._connect_btn.add_css_class("pill")
@@ -139,6 +136,7 @@ class HomePage:
         self._connect_btn.set_margin_bottom(32)
         self._connect_btn.connect("clicked", self._on_connect_clicked)
         action_group.add(self._connect_btn)
+        return action_group
 
     @property
     def widget(self) -> "Adw.PreferencesPage":
@@ -190,66 +188,81 @@ class HomePage:
         from snxui.core.types import ConnectionState
 
         state = status.state
-
         if state == ConnectionState.CONNECTED:
-            self._status_icon.set_icon_name("network-vpn-symbolic")
-            self._status_label.set_label("Connected")
-            ip = status.ip_address or ""
-            server = status.profile.server if status.profile else ""
-            info = f"IP: {ip}" if ip else ""
-            if server:
-                info = f"{info}  |  {server}" if info else server
-            self._info_label.set_label(info)
-            self._info_label.set_visible(bool(info))
-            self._connect_btn.set_label("Disconnect")
-            self._connect_btn.remove_css_class("suggested-action")
-            self._connect_btn.add_css_class("destructive-action")
-            self._spinner.set_spinning(False)
-            self._spinner.set_visible(False)
-            self._connect_btn.set_sensitive(True)
-            self._connecting = False
-
+            self._apply_connected(status)
         elif state == ConnectionState.CONNECTING:
-            self._status_icon.set_icon_name("network-transmit-receive-symbolic")
-            self._status_label.set_label("Connecting...")
-            self._info_label.set_visible(False)
-            self._connect_btn.set_sensitive(False)
-            self._spinner.set_spinning(True)
-            self._spinner.set_visible(True)
-
+            self._apply_connecting()
         elif state == ConnectionState.DISCONNECTING:
-            self._status_icon.set_icon_name("network-offline-symbolic")
-            self._status_label.set_label("Disconnecting...")
-            self._connect_btn.set_sensitive(False)
-            self._spinner.set_spinning(True)
-            self._spinner.set_visible(True)
-
+            self._apply_disconnecting()
         elif state == ConnectionState.ERROR:
-            self._status_icon.set_icon_name("network-error-symbolic")
-            err = status.error_message or "Unknown error"
-            self._status_label.set_label(f"Error: {err}")
-            self._info_label.set_visible(False)
-            self._connect_btn.set_label("Connect")
-            self._connect_btn.remove_css_class("destructive-action")
-            self._connect_btn.add_css_class("suggested-action")
-            self._connect_btn.set_sensitive(True)
-            self._spinner.set_spinning(False)
-            self._spinner.set_visible(False)
-            self._connecting = False
-
+            self._apply_error(status)
         else:  # DISCONNECTED
-            self._status_icon.set_icon_name("network-offline-symbolic")
-            self._status_label.set_label("Disconnected")
-            self._info_label.set_visible(False)
-            self._connect_btn.set_label("Connect")
-            self._connect_btn.remove_css_class("destructive-action")
-            self._connect_btn.add_css_class("suggested-action")
-            self._connect_btn.set_sensitive(True)
-            self._spinner.set_spinning(False)
-            self._spinner.set_visible(False)
-            self._connecting = False
-
+            self._apply_disconnected()
         return GLib.SOURCE_REMOVE
+
+    def _apply_connected(self, status: "ConnectionStatus") -> None:
+        """Update UI for the CONNECTED state."""
+        self._status_icon.set_icon_name("network-vpn-symbolic")
+        self._status_label.set_label("Connected")
+        ip = status.ip_address or ""
+        server = status.profile.server if status.profile else ""
+        info = f"IP: {ip}" if ip else ""
+        if server:
+            info = f"{info}  |  {server}" if info else server
+        self._info_label.set_label(info)
+        self._info_label.set_visible(bool(info))
+        self._connect_btn.set_label("Disconnect")
+        self._connect_btn.remove_css_class("suggested-action")
+        self._connect_btn.add_css_class("destructive-action")
+        self._spinner.set_spinning(False)
+        self._spinner.set_visible(False)
+        self._connect_btn.set_sensitive(True)
+        self._connecting = False
+
+    def _apply_connecting(self) -> None:
+        """Update UI for the CONNECTING state."""
+        self._status_icon.set_icon_name("network-transmit-receive-symbolic")
+        self._status_label.set_label("Connecting...")
+        self._info_label.set_visible(False)
+        self._connect_btn.set_sensitive(False)
+        self._spinner.set_spinning(True)
+        self._spinner.set_visible(True)
+
+    def _apply_disconnecting(self) -> None:
+        """Update UI for the DISCONNECTING state."""
+        self._status_icon.set_icon_name("network-offline-symbolic")
+        self._status_label.set_label("Disconnecting...")
+        self._info_label.set_visible(False)
+        self._connect_btn.set_sensitive(False)
+        self._spinner.set_spinning(True)
+        self._spinner.set_visible(True)
+
+    def _apply_error(self, status: "ConnectionStatus") -> None:
+        """Update UI for the ERROR state."""
+        self._status_icon.set_icon_name("network-error-symbolic")
+        err = status.error_message or "Unknown error"
+        self._status_label.set_label(f"Error: {err}")
+        self._info_label.set_visible(False)
+        self._connect_btn.set_label("Connect")
+        self._connect_btn.remove_css_class("destructive-action")
+        self._connect_btn.add_css_class("suggested-action")
+        self._connect_btn.set_sensitive(True)
+        self._spinner.set_spinning(False)
+        self._spinner.set_visible(False)
+        self._connecting = False
+
+    def _apply_disconnected(self) -> None:
+        """Update UI for the DISCONNECTED state."""
+        self._status_icon.set_icon_name("network-offline-symbolic")
+        self._status_label.set_label("Disconnected")
+        self._info_label.set_visible(False)
+        self._connect_btn.set_label("Connect")
+        self._connect_btn.remove_css_class("destructive-action")
+        self._connect_btn.add_css_class("suggested-action")
+        self._connect_btn.set_sensitive(True)
+        self._spinner.set_spinning(False)
+        self._spinner.set_visible(False)
+        self._connecting = False
 
     def _refresh_status(self) -> None:
         """Query the backend for the current status and apply it."""
@@ -279,10 +292,7 @@ class HomePage:
 
     def _do_disconnect(self) -> None:
         """Initiate disconnection in a background thread."""
-        self._connect_btn.set_sensitive(False)
-        self._spinner.set_spinning(True)
-        self._spinner.set_visible(True)
-        self._status_label.set_label("Disconnecting...")
+        self._apply_disconnecting()
 
         def _run() -> None:
             try:
@@ -296,11 +306,14 @@ class HomePage:
             else:
                 if success:
                     GLib.idle_add(self._refresh_status)
-                # success=False: disconnect() already dispatched ERROR status
-                # via _update_status().  Calling _refresh_status() here would
-                # invoke get_status() → check tunsnx → if still exists →
-                # override ERROR with CONNECTED, hiding the error message.
-                # Mirror the pattern used in _start_connect (Round 4 fix).
+                else:
+                    # Do NOT call _refresh_status() here: get_status() would
+                    # re-probe tunsnx (still up) and flip ERROR → CONNECTED,
+                    # hiding the disconnect-failure message.  Read the error
+                    # snapshot cached by disconnect() via _update_status()
+                    # and dispatch it to the UI directly.
+                    cached = self._backend.get_cached_status()
+                    GLib.idle_add(self.update_status, cached)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -323,7 +336,7 @@ class HomePage:
         try:
             password = self._cs.get_password(profile.id)
         except Exception:
-            logger.debug("No saved password for profile %s.", profile.id)
+            logger.debug("Could not retrieve saved password for profile %s.", profile.id)
 
         if password:
             self._start_connect(profile, password)
@@ -358,10 +371,9 @@ class HomePage:
         if self._connecting:
             return
         self._connecting = True
-        self._connect_btn.set_sensitive(False)
-        self._spinner.set_spinning(True)
-        self._spinner.set_visible(True)
-        self._status_label.set_label("Connecting...")
+        self._apply_connecting()
+
+        two_factor_callback = self._build_two_factor_callback(profile)
 
         def _run() -> None:
             try:
@@ -369,6 +381,7 @@ class HomePage:
                     profile,
                     password,
                     status_callback=self.update_status,
+                    two_factor_callback=two_factor_callback,
                 )
             except Exception as exc:
                 # FileNotFoundError (binary missing) or RuntimeError (pexpect
@@ -406,3 +419,64 @@ class HomePage:
             window.add_toast(toast)
         else:
             logger.warning("No profile selected for connection.")
+
+    def _build_two_factor_callback(
+        self, profile: "Profile"
+    ) -> "Optional[TwoFactorCallback]":
+        """Return appropriate 2FA callback based on profile's method."""
+        from snxui.core.types import TwoFactorMethod
+        if profile.two_factor_method == TwoFactorMethod.NONE:
+            return None
+        if profile.two_factor_method in (TwoFactorMethod.TOTP, TwoFactorMethod.HOTP):
+            secret: Optional[str] = None
+            try:
+                secret = self._cs.get_totp_secret(profile.id)
+            except Exception:
+                pass
+            if secret is not None:
+                # Явное non-optional связывание для mypy strict
+                _secret: str = secret
+
+                def _auto_totp(_prompt: str) -> Optional[str]:
+                    from snxui.core.totp import generate_totp
+                    try:
+                        return generate_totp(_secret)
+                    except ValueError as exc:
+                        logger.error("TOTP generation failed: %s", exc)
+                        return None
+                return _auto_totp
+        # RSA, challenge, RADIUS, TOTP без хранимого секрета — интерактивный диалог
+        return self._make_interactive_two_factor_callback(profile)
+
+    def _make_interactive_two_factor_callback(
+        self, profile: "Profile"
+    ) -> "TwoFactorCallback":
+        """Build a callback that shows TwoFactorDialog from the GTK main thread.
+
+        Blocks the background thread via threading.Event until the user acts.
+        """
+        def _callback(prompt_text: str) -> Optional[str]:
+            result: dict[str, Optional[str]] = {"code": None}
+            event = threading.Event()
+
+            def _show_dialog() -> bool:  # GLib.SOURCE_REMOVE compatible
+                from snxui.ui.dialogs import TwoFactorDialog
+
+                def _on_response(code: Optional[str]) -> None:
+                    result["code"] = code
+                    event.set()
+
+                parent = self._page.get_root()
+                TwoFactorDialog(
+                    profile_name=profile.name or profile.server,
+                    prompt_text=prompt_text,
+                ).show(callback=_on_response, parent=parent)
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_show_dialog)
+            if not event.wait(timeout=120.0):
+                logger.warning("2FA dialog timed out after 120s.")
+                return None
+            return result["code"]
+
+        return _callback

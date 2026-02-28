@@ -105,12 +105,8 @@ if _DBUS_AVAILABLE:
         def Get(self, interface_name: str, property_name: str) -> "dbus.String":
             return self._get_property(property_name)
 
-        @dbus.service.method(
-            dbus_interface="org.freedesktop.DBus.Properties",
-            in_signature="s",
-            out_signature="a{sv}",
-        )
-        def GetAll(self, interface_name: str) -> dict:
+        def _build_properties(self) -> dict:
+            """Return the full D-Bus property mapping for this SNI item."""
             return {
                 "Category": dbus.String("ApplicationStatus"),
                 "Id": dbus.String(self._app_id),
@@ -128,24 +124,16 @@ if _DBUS_AVAILABLE:
                 "AttentionMovieName": dbus.String(""),
             }
 
+        @dbus.service.method(
+            dbus_interface="org.freedesktop.DBus.Properties",
+            in_signature="s",
+            out_signature="a{sv}",
+        )
+        def GetAll(self, interface_name: str) -> dict:
+            return self._build_properties()
+
         def _get_property(self, name: str) -> "dbus.String":
-            mapping = {
-                "Category": dbus.String("ApplicationStatus"),
-                "Id": dbus.String(self._app_id),
-                "Status": dbus.String(self._status),
-                "IconName": dbus.String(self._icon_name),
-                "Title": dbus.String(self._title),
-                "ToolTipTitle": dbus.String(self._tooltip_title),
-                "ToolTipBody": dbus.String(self._tooltip_body),
-                "ToolTipIconName": dbus.String(self._icon_name),
-                "IconThemePath": dbus.String(""),
-                "Menu": dbus.ObjectPath("/NO_DBUSMENU"),
-                "ItemIsMenu": dbus.Boolean(False),
-                "OverlayIconName": dbus.String(""),
-                "AttentionIconName": dbus.String(""),
-                "AttentionMovieName": dbus.String(""),
-            }
-            return mapping.get(name, dbus.String(""))
+            return self._build_properties().get(name, dbus.String(""))
 
         # ------------------------------------------------------------------
         # SNI методы
@@ -263,7 +251,7 @@ class TrayManager:
         self._item: Optional[StatusNotifierItem] = None
         self._connected = False
         self._bus: Optional["dbus.SessionBus"] = None
-        self._callbacks: dict[str, list[Callable]] = {
+        self._callbacks: dict[str, list[Callable[[], None]]] = {
             "connect": [],
             "disconnect": [],
             "show": [],
@@ -357,19 +345,19 @@ class TrayManager:
     # Регистрация обработчиков
     # ------------------------------------------------------------------
 
-    def on_connect_clicked(self, callback: Callable) -> None:
+    def on_connect_clicked(self, callback: Callable[[], None]) -> None:
         """Зарегистрировать обработчик действия «Подключить»."""
         self._callbacks["connect"].append(callback)
 
-    def on_disconnect_clicked(self, callback: Callable) -> None:
+    def on_disconnect_clicked(self, callback: Callable[[], None]) -> None:
         """Зарегистрировать обработчик действия «Отключить»."""
         self._callbacks["disconnect"].append(callback)
 
-    def on_show_window(self, callback: Callable) -> None:
+    def on_show_window(self, callback: Callable[[], None]) -> None:
         """Зарегистрировать обработчик показа/скрытия главного окна."""
         self._callbacks["show"].append(callback)
 
-    def on_quit(self, callback: Callable) -> None:
+    def on_quit(self, callback: Callable[[], None]) -> None:
         """Зарегистрировать обработчик выхода из приложения."""
         self._callbacks["quit"].append(callback)
 

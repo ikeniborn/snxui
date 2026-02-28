@@ -22,4 +22,18 @@ htmlcov/
 # Claude Code Agent Workspace
 .claude/workspace/
 .claude/sessions/
+.claude/code-review/
 memory/
+
+# AppImage build artifacts
+snxui-*.AppImage
+.appimage-cache/
+AppDir/
+
+# DEB build artifacts
+snxui_*.deb
+# Temporary debian/ directory created at project root during local DEB builds
+debian/
+
+# Sphinx intermediate build files (html/ is committed)
+docs/sphinx/_build/.doctrees/

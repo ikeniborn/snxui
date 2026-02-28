@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# build-release.sh — Helper script for building Debian package release
+# build-release.sh — Helper script for building the Debian package locally.
+#
 # Usage: bash scripts/build-release.sh [VERSION]
 #
-# Builds snxui DEB package and renames it to snxui_VERSION_all.deb
-# Must be run from project root directory.
+# Must be run from the project root directory.
 #
 # Requirements:
-#   - debhelper, devscripts, python3-setuptools, dh-python installed
-#   - packaging/debian/ directory present
+#   sudo apt-get install debhelper devscripts python3-pip python3-setuptools python3-wheel dh-python
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="${1:-$(cat "${PROJECT_ROOT}/VERSION" | tr -d '[:space:]')}"
+VERSION="${1:-$(tr -d '[:space:]' < "${PROJECT_ROOT}/VERSION" 2>/dev/null || true)}"
 
 if [ -z "${VERSION}" ]; then
     echo "ERROR: VERSION not specified and VERSION file not found" >&2
@@ -22,30 +21,37 @@ if [ -z "${VERSION}" ]; then
     exit 1
 fi
 
-echo "Building DEB package for snxui v${VERSION}..."
-
-# Verify packaging/debian/ exists
 if [ ! -d "${PROJECT_ROOT}/packaging/debian" ]; then
     echo "ERROR: packaging/debian/ directory not found" >&2
     exit 1
 fi
 
+echo "Building DEB package for snxui v${VERSION}..."
+
 cd "${PROJECT_ROOT}"
 
-# dpkg-buildpackage requires debian/ at the CWD level
-# Following the Makefile pattern: cd packaging && dpkg-buildpackage -us -uc -b
-cd packaging
+# dpkg-buildpackage must run from the project root with debian/ as a direct subdirectory.
+# packaging/debian/ cannot be used as the source root because debian/rules references
+# source files (pyproject.toml, snxui/) relative to the project root.
+rm -rf debian
+cp -r packaging/debian debian/
+# Guarantee cleanup of the temporary debian/ directory even on failure
+trap 'rm -rf "${PROJECT_ROOT}/debian"' EXIT
+
+# -us: do not sign the source package
+# -uc: do not sign the .changes file
+# -b: binary-only build
 dpkg-buildpackage -us -uc -b
 
-# Go back to project root to find and rename the built package
-cd "${PROJECT_ROOT}"
-
-# Find the built .deb (dpkg-buildpackage places output in parent directory)
-DEB_FILE=$(find . "${PROJECT_ROOT}/.." -maxdepth 2 -name "snxui_*.deb" 2>/dev/null | head -1)
+# dpkg-buildpackage places output in the parent of the project root
+PARENT_DIR="$(dirname "${PROJECT_ROOT}")"
+DEB_FILE=$(ls "${PARENT_DIR}/snxui_${VERSION}-1_all.deb" 2>/dev/null \
+        || ls "${PARENT_DIR}/snxui_${VERSION}_all.deb" 2>/dev/null \
+        || find "${PARENT_DIR}" -maxdepth 1 -name "snxui_${VERSION}*_all.deb" -print -quit)
 
 if [ -z "${DEB_FILE}" ]; then
-    echo "ERROR: DEB file not found after build" >&2
-    ls -la ../ 2>/dev/null || true
+    echo "ERROR: DEB file not found after build in ${PARENT_DIR}" >&2
+    ls -la "${PARENT_DIR}/" >&2
     exit 1
 fi
 

@@ -242,12 +242,12 @@ class TestProfileDialog:
                     dlg.show()
 
         # cancel_btn.connect("clicked", lambda) is the FIRST connect() call on
-        # Gtk.Button.return_value.  Invoking it must call callback(None).
+        # Gtk.Button.return_value.  Invoking it must call callback(None, None).
         btn_mock = local_gtk.Button.return_value
         cancel_lambda = btn_mock.connect.call_args_list[0][0][1]
         cancel_lambda(None)  # simulate click
 
-        callback.assert_called_once_with(None)
+        callback.assert_called_once_with(None, None)
 
     def test_save_reads_widgets_before_dialog_close(self) -> None:
         """_on_save must read all widget values before dialog.close().
@@ -273,6 +273,9 @@ class TestProfileDialog:
         cert_row = MagicMock()
         port_row = MagicMock()
         save_row = MagicMock()
+        method_row = MagicMock()
+        totp_row = MagicMock()
+        save_totp_row = MagicMock()
 
         # Initial (pre-close) widget values.
         name_row.get_text.return_value = "Work VPN"
@@ -282,6 +285,9 @@ class TestProfileDialog:
         cert_row.get_text.return_value = ""
         port_row.get_value.return_value = 8443.0
         save_row.get_active.return_value = True
+        method_row.get_selected.return_value = 0  # "none" — first 2FA method
+        totp_row.get_text.return_value = ""
+        save_totp_row.get_active.return_value = False
 
         dialog_mock = MagicMock()
         local_adw.Dialog.return_value = dialog_mock
@@ -298,13 +304,19 @@ class TestProfileDialog:
 
         local_adw.EntryRow.side_effect = [name_row, server_row, user_row, ca_row, cert_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
-        local_adw.SwitchRow.return_value = save_row
+        # SwitchRow is called twice: save_password and save_totp_secret.
+        local_adw.SwitchRow.side_effect = [save_row, save_totp_row]
+        local_adw.ComboRow.return_value = method_row
+        local_adw.PasswordEntryRow.return_value = totp_row
+
+        def _capture_callback(profile, totp_secret):
+            received.append(profile)
 
         with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
             with patch.object(dlg_mod, "Adw", local_adw):
                 with patch.object(dlg_mod, "Gtk", local_gtk):
                     from snxui.ui.dialogs import ProfileDialog
-                    ProfileDialog(profile=None, callback=received.append).show()
+                    ProfileDialog(profile=None, callback=_capture_callback).show()
 
         # _on_save is the SECOND connect() call on Gtk.Button.return_value.
         btn_mock = local_gtk.Button.return_value
@@ -318,6 +330,75 @@ class TestProfileDialog:
         assert p.username == "alice"
         assert p.ssl_port == 8443
         assert p.save_password is True
+
+    def _setup_validation_test(
+        self, server: str, username: str
+    ) -> "tuple[object, object, MagicMock]":
+        """Return (on_save_fn, error_label_mock, callback_mock) for _on_save validation tests.
+
+        Mocks are wired with *server* and *username* as the get_text() return
+        values so callers can exercise the validation branch.
+        """
+        from snxui.ui import dialogs as dlg_mod
+
+        callback = MagicMock()
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        name_row = MagicMock()
+        server_row = MagicMock()
+        user_row = MagicMock()
+        ca_row = MagicMock()
+        cert_row = MagicMock()
+        port_row = MagicMock()
+        save_row = MagicMock()
+
+        name_row.get_text.return_value = "Work VPN"
+        server_row.get_text.return_value = server
+        user_row.get_text.return_value = username
+        ca_row.get_text.return_value = "/etc/ssl/certs"
+        cert_row.get_text.return_value = ""
+        port_row.get_value.return_value = 443.0
+        save_row.get_active.return_value = False
+
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, ca_row, cert_row]
+        local_adw.SpinRow.new_with_range.return_value = port_row
+        local_adw.SwitchRow.return_value = save_row
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import ProfileDialog
+                    ProfileDialog(profile=None, callback=callback).show()
+
+        # Save button is the SECOND Gtk.Button connect() call.
+        btn_mock = local_gtk.Button.return_value
+        on_save = btn_mock.connect.call_args_list[1][0][1]
+        # Gtk.Label(label="") is called once → always the same mock instance.
+        error_label = local_gtk.Label.return_value
+        return on_save, error_label, callback
+
+    def test_save_shows_error_label_when_server_missing(self) -> None:
+        """Validation: empty server string → error label visible, callback not called."""
+        on_save, error_label, callback = self._setup_validation_test(
+            server="", username="alice"
+        )
+        on_save(None)
+
+        error_label.set_label.assert_called_with("Server is required.")
+        error_label.set_visible.assert_called_with(True)
+        callback.assert_not_called()
+
+    def test_save_shows_error_label_when_username_missing(self) -> None:
+        """Validation: empty username string → error label visible, callback not called."""
+        on_save, error_label, callback = self._setup_validation_test(
+            server="vpn.work.com", username=""
+        )
+        on_save(None)
+
+        error_label.set_label.assert_called_with("Username is required.")
+        error_label.set_visible.assert_called_with(True)
+        callback.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +450,23 @@ class TestAboutDialog:
 
         call_kwargs = local_adw.AboutDialog.call_args[1]
         assert call_kwargs.get("version") == "0.1.0"
+
+    def test_show_sets_github_urls(self) -> None:
+        """AboutDialog.show() passes correct website and issue_url to Adw.AboutDialog."""
+        from snxui.ui import dialogs as dlg_mod
+
+        local_adw = MagicMock(name="Adw")
+        local_gtk = MagicMock(name="Gtk")
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import AboutDialog
+                    AboutDialog().show()
+
+        call_kwargs = local_adw.AboutDialog.call_args[1]
+        assert call_kwargs.get("website") == "https://github.com/snxui/snxui"
+        assert call_kwargs.get("issue_url") == "https://github.com/snxui/snxui/issues"
 
     def test_show_does_nothing_without_gtk(self, caplog: pytest.LogCaptureFixture) -> None:
         from snxui.ui import dialogs as dlg_mod

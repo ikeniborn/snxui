@@ -5,6 +5,8 @@ import logging
 import argparse
 from pathlib import Path
 
+from snxui import __version__, __app_id__
+
 logger = logging.getLogger("snxui.app")
 
 
@@ -58,7 +60,7 @@ class SNXApplication:
         from gi.repository import Adw, Gio
 
         self.app = Adw.Application(
-            application_id="com.snxui.SNXui",
+            application_id=__app_id__,
             flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
         )
         self.app.connect("activate", self._on_activate)
@@ -103,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="SNX VPN GUI Client")
     p.add_argument("--minimized", action="store_true", help="Start minimized to tray")
     p.add_argument("--debug", action="store_true", help="Enable debug logging")
-    p.add_argument("--version", action="version", version="snxui 0.1.0")
+    p.add_argument("--version", action="version", version=f"snxui {__version__}")
     return p.parse_args()
 
 

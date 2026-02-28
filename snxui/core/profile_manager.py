@@ -21,16 +21,16 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from filelock import FileLock, Timeout
 
-from .types import Profile
+from .types import Profile, TwoFactorMethod
 
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 1
+_FILE_FORMAT_VERSION = 2
 
 
 def _xdg_config_home() -> Path:
@@ -63,6 +63,8 @@ def _profile_to_dict(profile: Profile) -> dict:
         "reauth": profile.reauth,
         "save_password": profile.save_password,
         "cipher": profile.cipher,
+        "two_factor_method": profile.two_factor_method.value,
+        "save_totp_secret": profile.save_totp_secret,
     }
 
 
@@ -91,6 +93,13 @@ def _profile_from_dict(data: dict) -> Profile:
             raw_id,
         )
 
+    raw_2fa = data.get("two_factor_method", "none")
+    try:
+        two_factor_method = TwoFactorMethod(raw_2fa)
+    except ValueError:
+        logger.warning("Unknown 2FA method %r — defaulting to NONE.", raw_2fa)
+        two_factor_method = TwoFactorMethod.NONE
+
     return Profile(
         id=raw_id,
         name=data.get("name", ""),
@@ -102,6 +111,8 @@ def _profile_from_dict(data: dict) -> Profile:
         reauth=bool(data.get("reauth", True)),
         save_password=bool(data.get("save_password", False)),
         cipher=data.get("cipher"),
+        two_factor_method=two_factor_method,
+        save_totp_secret=bool(data.get("save_totp_secret", False)),
     )
 
 
@@ -192,13 +203,10 @@ class ProfileManager:
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                logger.debug("Failed to remove staging file %s.", tmp_path, exc_info=True)
 
     def _migrate(self, data: dict) -> dict:
-        """Apply any necessary schema migrations to *data* in-place.
-
-        Currently a no-op placeholder — extend when the file format changes.
-        """
+        """Apply any necessary schema migrations to *data* in-place."""
         version = data.get("version", 0)
         if version < _FILE_FORMAT_VERSION:
             logger.info(
@@ -206,11 +214,14 @@ class ProfileManager:
                 version,
                 _FILE_FORMAT_VERSION,
             )
-            data["version"] = _FILE_FORMAT_VERSION
-            # Future: add migration steps here
+        if version < 2:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("two_factor_method", "none")
+                profile_data.setdefault("save_totp_secret", False)
+            data["version"] = 2
         return data
 
-    def _with_file_lock(self, fn):
+    def _with_file_lock(self, fn: Callable[[], Any]) -> Any:
         """Execute *fn* under both the threading Lock and a FileLock.
 
         This protects against concurrent access from multiple threads as well
@@ -255,6 +266,10 @@ class ProfileManager:
             raise ValueError("Profile 'server' must not be empty.")
         if not profile.username.strip():
             raise ValueError("Profile 'username' must not be empty.")
+        if not 1 <= profile.ssl_port <= 65535:
+            raise ValueError(
+                f"Profile 'ssl_port' must be between 1 and 65535 (got {profile.ssl_port})."
+            )
 
     # ------------------------------------------------------------------
     # CRUD

@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional
+from typing import Callable, Optional
 
 
 class ConnectionState(Enum):
@@ -20,6 +20,22 @@ class ConnectionState(Enum):
     CONNECTED = auto()
     DISCONNECTING = auto()
     ERROR = auto()
+
+
+class TwoFactorMethod(Enum):
+    """Supported two-factor authentication methods."""
+
+    NONE = "none"
+    TOTP = "totp"
+    HOTP = "hotp"
+    RSA_SECURID = "rsa"
+    CHALLENGE_RESPONSE = "challenge"
+    RADIUS = "radius"
+
+
+# Type alias — здесь, чтобы ui и core могли импортировать без circular import
+TwoFactorCallback = Callable[[str], Optional[str]]
+# str — prompt_text от SNX; Optional[str] — код для ввода или None (отмена)
 
 
 @dataclass
@@ -53,6 +69,8 @@ class Profile:
     reauth: bool = True
     save_password: bool = False
     cipher: Optional[str] = None
+    two_factor_method: TwoFactorMethod = TwoFactorMethod.NONE
+    save_totp_secret: bool = False
 
 
 @dataclass

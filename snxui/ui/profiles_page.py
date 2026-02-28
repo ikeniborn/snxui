@@ -155,9 +155,14 @@ class ProfilesPage:
     def _on_add(self, *_args: object) -> None:
         from snxui.ui.dialogs import ProfileDialog
 
-        def _on_saved(profile: Optional["Profile"]) -> None:
+        def _on_saved(profile: Optional["Profile"], totp_secret: Optional[str]) -> None:
             if profile is None:
                 return
+            if totp_secret is not None and self._cs is not None:
+                try:
+                    self._cs.set_totp_secret(profile.id, totp_secret)
+                except Exception as exc:
+                    logger.warning("Failed to save TOTP secret: %s", exc)
             try:
                 self._pm.create(profile)
             except Exception as exc:
@@ -169,9 +174,14 @@ class ProfilesPage:
     def _on_edit(self, profile: "Profile") -> None:
         from snxui.ui.dialogs import ProfileDialog
 
-        def _on_saved(updated: Optional["Profile"]) -> None:
+        def _on_saved(updated: Optional["Profile"], totp_secret: Optional[str]) -> None:
             if updated is None:
                 return
+            if totp_secret is not None and self._cs is not None:
+                try:
+                    self._cs.set_totp_secret(updated.id, totp_secret)
+                except Exception as exc:
+                    logger.warning("Failed to save TOTP secret: %s", exc)
             try:
                 self._pm.update(updated)
             except Exception as exc:
@@ -205,7 +215,15 @@ class ProfilesPage:
                         self._cs.delete_password(profile.id)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
-                            "Failed to delete credentials for profile %s: %s",
+                            "Failed to delete password for profile %s: %s",
+                            profile.id,
+                            exc,
+                        )
+                    try:
+                        self._cs.delete_totp_secret(profile.id)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to delete TOTP secret for profile %s: %s",
                             profile.id,
                             exc,
                         )

@@ -13,8 +13,11 @@ Layout:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -37,6 +40,13 @@ except (ImportError, ValueError):
     logger.warning("GTK4/Libadwaita not available — SettingsPage will not function.")
 
 
+def _settings_path() -> Path:
+    """Return the path to the application settings JSON file."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "snxui" / "settings.json"
+
+
 _COLOR_SCHEMES = ["System", "Light", "Dark"]
 _ADW_COLOR_SCHEMES = [
     "COLOR_SCHEME_DEFAULT",
@@ -57,6 +67,7 @@ class SettingsPage:
             raise ImportError("GTK4/Libadwaita is required for SettingsPage.")
 
         self._autostart = autostart
+        self._settings: dict = self._load_settings()
         self._build_widget()
 
     # ------------------------------------------------------------------
@@ -65,12 +76,13 @@ class SettingsPage:
 
     def _build_widget(self) -> None:
         self._page = Adw.PreferencesPage()
+        self._page.add(self._build_general_group())
+        self._page.add(self._build_snx_group())
 
-        # ── General group ─────────────────────────────────────────────
+    def _build_general_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the General preferences group."""
         general_group = Adw.PreferencesGroup(title="General")
-        self._page.add(general_group)
 
-        # Autostart switch.
         self._autostart_row = Adw.SwitchRow(
             title="Launch at Login",
             subtitle="Start SNX VPN automatically when you log in",
@@ -79,15 +91,14 @@ class SettingsPage:
         self._autostart_row.connect("notify::active", self._on_autostart_toggled)
         general_group.add(self._autostart_row)
 
-        # Minimize to tray switch.
         self._tray_row = Adw.SwitchRow(
             title="Minimize to Tray on Close",
             subtitle="Keep running in the system tray when the window is closed",
         )
-        self._tray_row.set_active(True)  # Default: enabled.
+        self._tray_row.set_active(self._settings.get("minimize_to_tray", True))
+        self._tray_row.connect("notify::active", self._on_tray_toggled)
         general_group.add(self._tray_row)
 
-        # Color scheme combo.
         scheme_model = Gtk.StringList()
         for label in _COLOR_SCHEMES:
             scheme_model.append(label)
@@ -98,12 +109,12 @@ class SettingsPage:
         self._scheme_row.set_selected(0)  # Default: system.
         self._scheme_row.connect("notify::selected", self._on_scheme_changed)
         general_group.add(self._scheme_row)
+        return general_group
 
-        # ── SNX group ─────────────────────────────────────────────────
+    def _build_snx_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the SNX diagnostics preferences group."""
         snx_group = Adw.PreferencesGroup(title="SNX")
-        self._page.add(snx_group)
 
-        # SNX binary path.
         snx_path = self._find_snx_binary()
         snx_row = Adw.ActionRow(
             title="SNX Binary",
@@ -115,7 +126,6 @@ class SettingsPage:
         snx_row.add_prefix(snx_icon)
         snx_group.add(snx_row)
 
-        # Polkit status.
         polkit_status = self._check_polkit()
         polkit_row = Adw.ActionRow(
             title="Polkit Status",
@@ -126,10 +136,49 @@ class SettingsPage:
         )
         polkit_row.add_prefix(polkit_icon)
         snx_group.add(polkit_row)
+        return snx_group
 
     @property
     def widget(self) -> "Adw.PreferencesPage":
         return self._page
+
+    # ------------------------------------------------------------------
+    # Settings persistence
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_settings() -> dict:
+        """Load persisted settings from JSON file; return defaults on any error."""
+        path = _settings_path()
+        if not path.exists():
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+            logger.warning("settings.json has invalid structure — resetting.")
+            return {}
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to read settings.json: %s", exc)
+            return {}
+
+    def _save_settings(self) -> None:
+        """Persist current in-memory settings to JSON file."""
+        path = _settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._settings, fh, indent=2, ensure_ascii=False)
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning("Failed to save settings.json: %s", exc)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Failed to remove settings staging file.", exc_info=True)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -177,6 +226,10 @@ class SettingsPage:
             finally:
                 self._autostart_reverting = False
             logger.error("Failed to %s autostart.", "enable" if active else "disable")
+
+    def _on_tray_toggled(self, row: "Adw.SwitchRow", _param: object) -> None:
+        self._settings["minimize_to_tray"] = row.get_active()
+        self._save_settings()
 
     def _on_scheme_changed(self, row: "Adw.ComboRow", _param: object) -> None:
         idx = row.get_selected()
