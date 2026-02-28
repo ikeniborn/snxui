@@ -47,7 +47,12 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y python3-dbus libdbus-1-dev libglib2.0-dev
+          sudo apt-get install -y \
+            python3-dbus \
+            libdbus-1-dev \
+            libglib2.0-dev \
+            libgirepository1.0-dev \
+            libcairo2-dev
 
       - name: Install Python dependencies
         run: pip install -e ".[dev]"
