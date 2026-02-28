@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_install:
+	python3 setup.py install --root=$(CURDIR)/debian/snxui --prefix=/usr --no-compile -O0
+	# Установить polkit policy
+	install -Dm644 snxui/data/com.snxui.policy \
+	    $(CURDIR)/debian/snxui/usr/share/polkit-1/actions/com.snxui.policy
+	# Установить .desktop файл
+	install -Dm644 snxui/data/snxui.desktop \
+	    $(CURDIR)/debian/snxui/usr/share/applications/snxui.desktop
+	# Установить иконки
+	install -Dm644 snxui/data/icons/snxui.svg \
+	    $(CURDIR)/debian/snxui/usr/share/icons/hicolor/scalable/apps/snxui.svg

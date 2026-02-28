@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "snxui"
+version = "0.1.0"
+description = "GUI client for Check Point SNX VPN on Linux"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["vpn", "checkpoint", "snx", "gtk4", "linux"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet",
+]
+dependencies = [
+    "pexpect>=4.8",
+    "keyring>=24.0",
+    "SecretStorage>=3.3",
+    "filelock>=3.12",
+    "PyGObject>=3.44",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio",
+    "black>=23.0",
+    "mypy>=1.0",
+    "types-filelock",
+]
+
+[project.scripts]
+snxui = "snxui.app:main"
+
+[project.gui-scripts]
+snxui = "snxui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/snxui/snxui"
+Repository = "https://github.com/snxui/snxui"
+"Bug Tracker" = "https://github.com/snxui/snxui/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["snxui*"]
+
+[tool.setuptools.package-data]
+"snxui.data" = ["*.policy", "*.desktop", "icons/*.svg", "icons/*.png"]
+
+[tool.black]
+line-length = 99
+target-version = ["py310"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true

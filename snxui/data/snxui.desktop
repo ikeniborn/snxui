@@ -1,0 +1,16 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=SNX VPN
+Name[ru]=SNX VPN
+GenericName=VPN Client
+GenericName[ru]=VPN-клиент
+Comment=Check Point SNX VPN client for Linux
+Comment[ru]=Клиент Check Point SNX VPN для Linux
+Exec=snxui %U
+Icon=network-vpn
+Terminal=false
+Categories=Network;Security;
+Keywords=vpn;snx;checkpoint;network;
+StartupNotify=true
+StartupWMClass=snxui
