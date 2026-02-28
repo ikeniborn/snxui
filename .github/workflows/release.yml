@@ -166,6 +166,8 @@ jobs:
         # gcc + pkg-config + dev headers are required by pip when compiling
         # PyGObject and dbus-python inside the bundled Python environment.
         # libgirepository-2.0-dev: required by PyGObject >= 3.50 (Ubuntu 24.04+).
+        # libgirepository1.0-dev: required by build-appimage.sh validation check
+        #   (pkg-config gobject-introspection-1.0) and for bundled typelibs.
         # libdbus-1-dev: required to compile dbus-python (provides dbus/dbus.h).
         # squashfs-tools is required by appimagetool to create the squashfs layer.
         # libfuse2 is a fallback; APPIMAGE_EXTRACT_AND_RUN=1 bypasses FUSE at runtime.
@@ -175,6 +177,7 @@ jobs:
             gcc \
             pkg-config \
             libgirepository-2.0-dev \
+            libgirepository1.0-dev \
             libcairo2-dev \
             libglib2.0-dev \
             libdbus-1-dev \

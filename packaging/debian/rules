@@ -11,10 +11,11 @@ override_dh_auto_build:
 override_dh_auto_test:
 
 override_dh_auto_install:
-	# --no-build-isolation: use system setuptools/wheel (declared in Build-Depends)
-	# --no-deps: runtime deps are handled via Depends: in debian/control
+	# DEB_PYTHON_INSTALL_LAYOUT=deb_system: install to /usr/lib/python3/dist-packages/
+	#   rather than /usr/local/lib/... (Ubuntu pip default).
+	# --no-deps: runtime deps are handled via Depends: in debian/control.
+	DEB_PYTHON_INSTALL_LAYOUT=deb_system \
 	python3 -m pip install \
-	    --no-build-isolation \
 	    --no-deps \
 	    --root=$(CURDIR)/debian/snxui \
 	    --prefix=/usr \
