@@ -152,7 +152,7 @@ jobs:
           path: "snxui_${{ needs.inject-versions.outputs.version }}_all.deb"
 
   build-appimage:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     needs: inject-versions
     steps:
       - uses: actions/checkout@v4
@@ -165,6 +165,7 @@ jobs:
       - name: Install build dependencies
         # gcc + pkg-config + dev headers are required by pip when compiling
         # PyGObject and dbus-python inside the bundled Python environment.
+        # libgirepository-2.0-dev: required by PyGObject >= 3.50 (Ubuntu 24.04+).
         # libdbus-1-dev: required to compile dbus-python (provides dbus/dbus.h).
         # squashfs-tools is required by appimagetool to create the squashfs layer.
         # libfuse2 is a fallback; APPIMAGE_EXTRACT_AND_RUN=1 bypasses FUSE at runtime.
@@ -173,7 +174,7 @@ jobs:
           sudo apt-get install -y \
             gcc \
             pkg-config \
-            libgirepository1.0-dev \
+            libgirepository-2.0-dev \
             libcairo2-dev \
             libglib2.0-dev \
             libdbus-1-dev \

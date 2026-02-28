@@ -55,5 +55,4 @@ clean:
 	find . -name "*.pyc" -delete
 	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	rm -rf build/ dist/ *.egg-info/ htmlcov/ .coverage AppDir/ snxui-*.AppImage
-	rm -rf debian/
 	rm -f snxui_*.deb snxui_*.changes snxui_*.buildinfo
