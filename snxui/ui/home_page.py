@@ -294,8 +294,20 @@ class HomePage:
 
     @staticmethod
     def _is_auth_failure(error_message: str) -> bool:
-        """Return True if the error message indicates wrong credentials."""
-        keywords = ("authentication failed", "invalid password", "access denied", "login failed")
+        """Return True if the error message indicates wrong credentials.
+
+        Includes "unexpected snx process termination" because some SNX builds
+        silently exit (EOF) instead of printing "Authentication failed" when
+        the password is wrong.  The dialog lets the user try a different
+        password rather than having to click Connect manually.
+        """
+        keywords = (
+            "authentication failed",
+            "invalid password",
+            "access denied",
+            "login failed",
+            "unexpected snx process termination",
+        )
         return any(kw in error_message.lower() for kw in keywords)
 
     def _retry_password_after_failure(self, profile: "Profile", error_msg: str) -> None:

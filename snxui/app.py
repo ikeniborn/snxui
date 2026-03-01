@@ -29,6 +29,10 @@ def setup_logging(debug: bool = False) -> None:
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         handlers=handlers,
     )
+    # Install the in-process GUI debug handler so DebugWindow can capture
+    # all snxui.* log entries from startup (even before the window opens).
+    from snxui.core.debug_log import install as _install_debug_handler
+    _install_debug_handler()
 
 
 class SNXApplication:

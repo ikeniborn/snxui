@@ -41,8 +41,9 @@ except (ImportError, ValueError):
 
 
 def _build_menu() -> "Gio.Menu":
-    """Create the application menu (About, Quit)."""
+    """Create the application menu (Debug Log, About, Quit)."""
     menu = Gio.Menu()
+    menu.append("Debug Log", "app.debug-log")
     menu.append("About SNX VPN", "app.about")
     menu.append("Quit", "app.quit")
     return menu
@@ -169,6 +170,11 @@ class MainWindow:
 
     def _register_actions(self) -> None:
         """Register GAction instances on the application."""
+        # "Debug Log" action.
+        debug_action = Gio.SimpleAction.new("debug-log", None)
+        debug_action.connect("activate", self._on_debug_log)
+        self._app.add_action(debug_action)
+
         # "About" action.
         about_action = Gio.SimpleAction.new("about", None)
         about_action.connect("activate", self._on_about)
@@ -280,6 +286,11 @@ class MainWindow:
             return True  # Prevent the default destroy.
         logger.debug("Close requested — quitting (minimize-to-tray is off).")
         return False  # Allow the default destroy.
+
+    def _on_debug_log(self, action: object, param: object) -> None:
+        from snxui.ui.debug_window import DebugWindow
+
+        DebugWindow.show_or_raise(parent=self._win)
 
     def _on_about(self, action: object, param: object) -> None:
         from snxui.ui.dialogs import AboutDialog
