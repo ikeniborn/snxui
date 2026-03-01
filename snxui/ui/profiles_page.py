@@ -169,7 +169,7 @@ class ProfilesPage:
                 logger.error("Failed to create profile: %s", exc)
             self.refresh()
 
-        ProfileDialog(profile=None, callback=_on_saved).show()
+        ProfileDialog(profile=None, callback=_on_saved).show(self._page.get_root())
 
     def _on_edit(self, profile: "Profile") -> None:
         from snxui.ui.dialogs import ProfileDialog
@@ -188,7 +188,7 @@ class ProfilesPage:
                 logger.error("Failed to update profile: %s", exc)
             self.refresh()
 
-        ProfileDialog(profile=profile, callback=_on_saved).show()
+        ProfileDialog(profile=profile, callback=_on_saved).show(self._page.get_root())
 
     def _on_delete(self, profile: "Profile") -> None:
         """Show a confirmation dialog before deleting."""

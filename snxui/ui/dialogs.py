@@ -260,24 +260,32 @@ class ProfileDialog:
     def show(self, parent: object = None) -> None:
         """Present the profile editor dialog."""
         is_new = self._profile is None
-        dialog = Adw.Dialog(title="Add Profile" if is_new else "Edit Profile")
-        dialog.set_content_width(400)
+        dialog = Adw.Window(title="Add Profile" if is_new else "Edit Profile")
+        dialog.set_modal(True)
+        dialog.set_resizable(True)
+        dialog.set_default_size(480, 580)
+        if parent is not None:
+            dialog.set_transient_for(parent)
 
         scroll, rows = self._build_form_rows()
         action_area = self._build_action_area(dialog, is_new, rows)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        outer.set_vexpand(True)
         outer.append(scroll)
         outer.append(action_area)
-        dialog.set_child(outer)
-        dialog.present(parent)
+
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        toolbar_view.set_content(outer)
+        dialog.set_content(toolbar_view)
+        dialog.present()
 
     def _build_form_rows(self) -> "tuple[Gtk.ScrolledWindow, dict]":
         """Build the scrolled form and return (scroll, rows_dict)."""
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_min_content_height(300)
-        scroll.set_max_content_height(500)
+        scroll.set_vexpand(True)
 
         prefs_page = Adw.PreferencesPage()
         group = Adw.PreferencesGroup(title="Profile Details")

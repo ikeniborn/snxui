@@ -81,7 +81,7 @@ class HomePage:
         status_group = Adw.PreferencesGroup()
 
         self._status_icon = Gtk.Image()
-        self._status_icon.set_icon_name("network-offline-symbolic")
+        self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_icon.set_pixel_size(64)
         self._status_icon.set_margin_top(24)
         self._status_icon.set_margin_bottom(8)
@@ -202,7 +202,7 @@ class HomePage:
 
     def _apply_connected(self, status: "ConnectionStatus") -> None:
         """Update UI for the CONNECTED state."""
-        self._status_icon.set_icon_name("network-vpn-symbolic")
+        self._status_icon.set_from_icon_name("network-vpn-symbolic")
         self._status_label.set_label("Connected")
         ip = status.ip_address or ""
         server = status.profile.server if status.profile else ""
@@ -221,7 +221,7 @@ class HomePage:
 
     def _apply_connecting(self) -> None:
         """Update UI for the CONNECTING state."""
-        self._status_icon.set_icon_name("network-transmit-receive-symbolic")
+        self._status_icon.set_from_icon_name("network-transmit-receive-symbolic")
         self._status_label.set_label("Connecting...")
         self._info_label.set_visible(False)
         self._connect_btn.set_sensitive(False)
@@ -230,7 +230,7 @@ class HomePage:
 
     def _apply_disconnecting(self) -> None:
         """Update UI for the DISCONNECTING state."""
-        self._status_icon.set_icon_name("network-offline-symbolic")
+        self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_label.set_label("Disconnecting...")
         self._info_label.set_visible(False)
         self._connect_btn.set_sensitive(False)
@@ -239,7 +239,7 @@ class HomePage:
 
     def _apply_error(self, status: "ConnectionStatus") -> None:
         """Update UI for the ERROR state."""
-        self._status_icon.set_icon_name("network-error-symbolic")
+        self._status_icon.set_from_icon_name("network-error-symbolic")
         err = status.error_message or "Unknown error"
         self._status_label.set_label(f"Error: {err}")
         self._info_label.set_visible(False)
@@ -253,7 +253,7 @@ class HomePage:
 
     def _apply_disconnected(self) -> None:
         """Update UI for the DISCONNECTED state."""
-        self._status_icon.set_icon_name("network-offline-symbolic")
+        self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_label.set_label("Disconnected")
         self._info_label.set_visible(False)
         self._connect_btn.set_label("Connect")

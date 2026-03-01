@@ -184,7 +184,7 @@ class TestProfileDialog:
                     dlg = ProfileDialog(profile=None, callback=MagicMock())
                     dlg.show()
 
-        local_adw.Dialog.assert_called()
+        local_adw.Window.assert_called()
 
     def test_show_prefills_fields_for_existing_profile(self) -> None:
         from snxui.ui import dialogs as dlg_mod
@@ -290,7 +290,7 @@ class TestProfileDialog:
         save_totp_row.get_active.return_value = False
 
         dialog_mock = MagicMock()
-        local_adw.Dialog.return_value = dialog_mock
+        local_adw.Window.return_value = dialog_mock
 
         def _invalidate_widgets():
             """Simulate widget destruction by returning None after close."""

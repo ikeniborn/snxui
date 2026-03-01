@@ -35,8 +35,9 @@ deb:
 appimage: test
 	bash packaging/appimage/build-appimage.sh $(VERSION)
 
-install:
-	sudo $(PYTHON) -m pip install -e .
+install: $(VENV)
+	$(PYTHON) -m pip install -e .
+	sudo install -Dm755 $(VENV)/bin/snxui /usr/local/bin/snxui
 	sudo install -Dm644 snxui/data/com.snxui.policy \
 	    /usr/share/polkit-1/actions/com.snxui.policy
 	sudo install -Dm644 snxui/data/snxui.desktop \
@@ -46,7 +47,8 @@ install:
 	sudo gtk-update-icon-cache /usr/share/icons/hicolor/ -t
 
 uninstall:
-	sudo $(PYTHON) -m pip uninstall snxui -y
+	$(PYTHON) -m pip uninstall snxui -y
+	sudo rm -f /usr/local/bin/snxui
 	sudo rm -f /usr/share/polkit-1/actions/com.snxui.policy
 	sudo rm -f /usr/share/applications/snxui.desktop
 	sudo rm -f /usr/share/icons/hicolor/scalable/apps/snxui.svg
