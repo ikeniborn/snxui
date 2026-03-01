@@ -26,13 +26,14 @@ try:
 
     gi.require_version("Adw", "1")
     gi.require_version("Gtk", "4.0")
-    from gi.repository import Adw, Gtk, GLib
+    from gi.repository import Adw, Gtk, GLib, Gdk
 
     _GTK_AVAILABLE = True
 except (ImportError, ValueError):
     Adw = None  # type: ignore[assignment]
     Gtk = None  # type: ignore[assignment]
     GLib = None  # type: ignore[assignment]
+    Gdk = None  # type: ignore[assignment]
     _GTK_AVAILABLE = False
     logger.warning("GTK4/Libadwaita not available — HomePage will not function.")
 
@@ -106,11 +107,22 @@ class HomePage:
         self._spinner.set_margin_bottom(8)
         self._spinner.set_visible(False)
 
+        self._copy_error_btn = Gtk.Button(label="Copy error")
+        self._copy_error_btn.set_icon_name("edit-copy-symbolic")
+        self._copy_error_btn.add_css_class("flat")
+        self._copy_error_btn.add_css_class("caption")
+        self._copy_error_btn.set_halign(Gtk.Align.CENTER)
+        self._copy_error_btn.set_tooltip_text("Copy error details to clipboard")
+        self._copy_error_btn.set_margin_bottom(8)
+        self._copy_error_btn.set_visible(False)
+        self._copy_error_btn.connect("clicked", self._on_copy_error_clicked)
+
         status_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         status_box.set_halign(Gtk.Align.CENTER)
         status_box.append(self._status_icon)
         status_box.append(self._status_label)
         status_box.append(self._info_label)
+        status_box.append(self._copy_error_btn)
         status_box.append(self._spinner)
         status_group.add(status_box)
         return status_group
@@ -232,6 +244,7 @@ class HomePage:
         self._status_icon.set_from_icon_name("network-transmit-receive-symbolic")
         self._status_label.set_label("Connecting...")
         self._info_label.set_visible(False)
+        self._copy_error_btn.set_visible(False)
         self._connect_btn.set_sensitive(False)
         self._spinner.set_spinning(True)
         self._spinner.set_visible(True)
@@ -251,6 +264,7 @@ class HomePage:
         """Update UI for the ERROR state."""
         self._status_icon.set_from_icon_name("network-error-symbolic")
         err = status.error_message or "Unknown error"
+        self._current_error = err  # stored for clipboard copy
 
         # Split multi-line messages: first line as title, rest as detail.
         lines = err.strip().splitlines()
@@ -263,6 +277,7 @@ class HomePage:
             self._info_label.set_visible(True)
         else:
             self._info_label.set_visible(False)
+        self._copy_error_btn.set_visible(True)
 
         self._connect_btn.set_label("Connect")
         self._connect_btn.remove_css_class("destructive-action")
@@ -295,6 +310,7 @@ class HomePage:
         self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_label.set_label("Disconnected")
         self._info_label.set_visible(False)
+        self._copy_error_btn.set_visible(False)
         self._connect_btn.set_label("Connect")
         self._connect_btn.remove_css_class("destructive-action")
         self._connect_btn.add_css_class("suggested-action")
@@ -471,6 +487,18 @@ class HomePage:
                     GLib.idle_add(self._refresh_status)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_copy_error_clicked(self, btn: "Gtk.Button") -> None:
+        """Copy the current error text to the system clipboard."""
+        error_text = getattr(self, "_current_error", "")
+        if not error_text:
+            return
+        display = Gdk.Display.get_default()
+        if display is not None:
+            display.get_clipboard().set(error_text)
+        window = self._page.get_root()
+        if window is not None and hasattr(window, "add_toast"):
+            window.add_toast(Adw.Toast(title="Error copied to clipboard."))
 
     def _show_no_profile_toast(self) -> None:
         """Display a toast warning when no profile is selected."""
