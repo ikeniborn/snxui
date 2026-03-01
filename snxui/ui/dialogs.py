@@ -360,6 +360,17 @@ class ProfileDialog:
         server_row = Adw.EntryRow(title="Server (hostname)")
         server_row.set_text(p.server if p else "")
         group.add(server_row)
+
+        # Auth mode selector — enforces mutual exclusivity in the UI.
+        _cert_initially = bool(p and p.certificate)
+        auth_model = Gtk.StringList()
+        auth_model.append("Username / Password")
+        auth_model.append("Certificate File")
+        auth_mode_row = Adw.ComboRow(title="Authentication")
+        auth_mode_row.set_model(auth_model)
+        auth_mode_row.set_selected(1 if _cert_initially else 0)
+        group.add(auth_mode_row)
+
         user_row = Adw.EntryRow(title="Username")
         user_row.set_text(p.username if p else "")
         group.add(user_row)
@@ -373,12 +384,22 @@ class ProfileDialog:
         ca_row = Adw.EntryRow(title="CA Certificates Path")
         ca_row.set_text(p.ca_list if p else "/etc/ssl/certs")
         group.add(ca_row)
-        cert_row = Adw.EntryRow(title="Client Certificate (optional)")
+        cert_row = Adw.EntryRow(title="Certificate File Path")
         cert_row.set_text(p.certificate or "" if p else "")
         group.add(cert_row)
         save_pwd_row = Adw.SwitchRow(title="Save Password in Keyring")
         save_pwd_row.set_active(p.save_password if p else False)
         group.add(save_pwd_row)
+
+        def _on_auth_mode_changed(combo: object, _param: object) -> None:
+            cert_mode = combo.get_selected() == 1  # type: ignore[union-attr]
+            user_row.set_visible(not cert_mode)
+            domain_row.set_visible(not cert_mode)
+            save_pwd_row.set_visible(not cert_mode)
+            cert_row.set_visible(cert_mode)
+
+        auth_mode_row.connect("notify::selected", _on_auth_mode_changed)
+        _on_auth_mode_changed(auth_mode_row, None)  # apply initial state
 
         cur_method_idx = 0
         if p and p.two_factor_method.value in _2FA_METHOD_VALUES:
@@ -388,8 +409,8 @@ class ProfileDialog:
         )
 
         rows = {
-            "name": name_row, "server": server_row, "user": user_row,
-            "domain": domain_row,
+            "name": name_row, "server": server_row, "auth_mode": auth_mode_row,
+            "user": user_row, "domain": domain_row,
             "port": port_row, "ca": ca_row, "cert": cert_row,
             "save_pwd": save_pwd_row,
             "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
@@ -483,13 +504,13 @@ class ProfileDialog:
             username = rows["user"].get_text().strip()
             certificate = rows["cert"].get_text().strip()
 
+            cert_mode = rows["auth_mode"].get_selected() == 1
             err = _validate_server(server)
             if err is None:
-                if username and certificate:
-                    # SNX usage: {-u <user> | -c <certfile>} — mutually exclusive.
-                    err = "Username and Certificate are mutually exclusive — fill only one."
-                elif not certificate:
-                    # Username/password auth: username is required.
+                if cert_mode:
+                    if not certificate:
+                        err = "Certificate file path is required."
+                else:
                     err = _validate_username(username)
             if err is None:
                 # Validate TOTP secret only when a secret was entered.
@@ -540,6 +561,9 @@ class ProfileDialog:
         """
         from snxui.core.types import Profile, TwoFactorMethod  # noqa: PLC0415
 
+        cert_mode = rows["auth_mode"].get_selected() == 1
+        cert_text = rows["cert"].get_text().strip() or None
+        domain_text = rows["domain"].get_text().strip() or None
         method_idx = rows["2fa_method"].get_selected()
         two_factor_method = TwoFactorMethod(_2FA_METHOD_VALUES[method_idx])
         totp_secret: Optional[str] = rows["totp_secret"].get_text().strip() or None
@@ -547,12 +571,12 @@ class ProfileDialog:
             id=self._profile.id if self._profile else str(uuid.uuid4()),
             name=rows["name"].get_text().strip(),
             server=server,
-            username=username,
-            domain=rows["domain"].get_text().strip() or None,
+            username="" if cert_mode else username,
+            domain=None if cert_mode else domain_text,
             ssl_port=int(rows["port"].get_value()),
             ca_list=rows["ca"].get_text().strip() or "/etc/ssl/certs",
-            certificate=rows["cert"].get_text().strip() or None,
-            save_password=rows["save_pwd"].get_active(),
+            certificate=cert_text if cert_mode else None,
+            save_password=False if cert_mode else rows["save_pwd"].get_active(),
             two_factor_method=two_factor_method,
             save_totp_secret=rows["save_totp"].get_active(),
         )
