@@ -122,7 +122,7 @@ _RE_2FA_ANY = re.compile(
 # and CLI option lines like "-s gateway   specify gateway".
 _RE_SNX_BANNER_SKIP = re.compile(
     r"^(Check\s+Point|SNX\s+-\s+(Network\s+Extension|Connected|Version)"
-    r"|Logging\s+|Copyright|usage\s*:|-[a-z]\b|\s*$)",
+    r"|Logging\s+|Copyright|usage\s*:|-[a-z]\b|snx\s+-\w|\s*$)",
     re.IGNORECASE,
 )
 
