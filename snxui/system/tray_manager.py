@@ -337,6 +337,14 @@ class TrayManager:
         self._item.update_status(status)
         logger.debug("TrayManager: set_connected(%s, %r)", connected, profile_name)
 
+    def set_connecting(self) -> None:
+        """Показать иконку «подключение» в трее."""
+        if self._item is None:
+            return
+        self._item.update_icon(_ICON_CONNECTING, "SNX VPN — Подключение…", "Установка соединения")
+        self._item.update_status("Active")
+        logger.debug("TrayManager: set_connecting()")
+
     def set_error(self, error: str) -> None:
         """Показать иконку ошибки с описанием в tooltip.
 

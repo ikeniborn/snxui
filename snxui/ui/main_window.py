@@ -234,14 +234,21 @@ class MainWindow:
         self._tray_connect_action.set_enabled(not connected)
         self._tray_disconnect_action.set_enabled(connected)
 
+        section_vpn = Gio.Menu()
+        section_vpn.append("Connect", "app.tray-connect")
+        section_vpn.append("Disconnect", "app.tray-disconnect")
+
+        section_nav = Gio.Menu()
+        section_nav.append("Show Window", "app.tray-show")
+        section_nav.append("View Profiles", "app.tray-profiles")
+
+        section_quit = Gio.Menu()
+        section_quit.append("Quit", "app.quit")
+
         menu = Gio.Menu()
-        menu.append("Connect", "app.tray-connect")
-        menu.append("Disconnect", "app.tray-disconnect")
-        menu.append_section(None, Gio.Menu())   # separator
-        menu.append("Show Window", "app.tray-show")
-        menu.append("View Profiles", "app.tray-profiles")
-        menu.append_section(None, Gio.Menu())   # separator
-        menu.append("Quit", "app.quit")
+        menu.append_section(None, section_vpn)
+        menu.append_section(None, section_nav)
+        menu.append_section(None, section_quit)
 
         self._tray_popover = Gtk.PopoverMenu.new_from_model(menu)
         self._tray_popover.set_parent(self._win)
