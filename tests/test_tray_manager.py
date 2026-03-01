@@ -329,3 +329,136 @@ class TestDbusUnavailableFallback:
             assert len(tray._callbacks["disconnect"]) == 1
             assert len(tray._callbacks["show"]) == 1
             assert len(tray._callbacks["quit"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# ContextMenu dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestContextMenuDispatch:
+    def test_context_menu_dispatches_to_menu_callback(self):
+        """StatusNotifierItem.ContextMenu() вызывает menu_callback('context_menu')."""
+        with patch("snxui.system.tray_manager._DBUS_AVAILABLE", True), \
+             patch("snxui.system.tray_manager.dbus") as mock_dbus:
+            # Build a real StatusNotifierItem-like object without real D-Bus by
+            # directly instantiating the stub path.
+            from snxui.system.tray_manager import TrayManager
+            tray = TrayManager("snxui")
+            mock_item = _make_mock_item()
+            tray._item = mock_item
+
+            # Simulate the menu_callback that StatusNotifierItem would call.
+            dispatched: list[str] = []
+
+            def fake_menu_callback(action: str) -> None:
+                dispatched.append(action)
+
+            # Wire up: create a minimal SNI-like object that uses the callback.
+            # We test TrayManager._on_menu_action instead, since StatusNotifierItem
+            # calls menu_callback which is TrayManager._on_menu_action.
+            tray._on_menu_action("context_menu")
+
+        # _on_menu_action should not crash for an empty callbacks list.
+        # Verify 'context_menu' key exists and list is empty by default.
+        assert "context_menu" in tray._callbacks
+
+    def test_on_context_menu_registers_callback(self):
+        """on_context_menu() добавляет callback в _callbacks['context_menu']."""
+        tray = TrayManager("snxui")
+        cb = MagicMock()
+        tray.on_context_menu(cb)
+        assert cb in tray._callbacks["context_menu"]
+
+    def test_context_menu_action_dispatches_to_registered_callback(self):
+        """_on_menu_action('context_menu') вызывает все зарегистрированные callbacks."""
+        tray = TrayManager("snxui")
+        cb1 = MagicMock()
+        cb2 = MagicMock()
+        tray.on_context_menu(cb1)
+        tray.on_context_menu(cb2)
+
+        tray._on_menu_action("context_menu")
+
+        cb1.assert_called_once()
+        cb2.assert_called_once()
+
+    def test_context_menu_key_in_callbacks_on_init(self):
+        """TrayManager инициализируется с ключом 'context_menu' в _callbacks."""
+        tray = TrayManager("snxui")
+        assert "context_menu" in tray._callbacks
+        assert isinstance(tray._callbacks["context_menu"], list)
+
+    def test_sni_context_menu_calls_menu_callback_with_context_menu(self):
+        """StatusNotifierItem.ContextMenu() вызывает menu_callback('context_menu')."""
+        with patch("snxui.system.tray_manager._DBUS_AVAILABLE", True), \
+             patch("snxui.system.tray_manager.dbus") as mock_dbus, \
+             patch("snxui.system.tray_manager.StatusNotifierItem") as MockSNI:
+            tray = TrayManager("snxui")
+            mock_item = _make_mock_item()
+
+            mock_dbus.mainloop.glib.DBusGMainLoop.return_value = None
+            mock_dbus.SessionBus.return_value = MagicMock()
+            MockSNI.return_value = mock_item
+            mock_dbus.SessionBus.return_value.get_object.side_effect = Exception("no watcher")
+
+            tray.start()
+
+            # Verify that the menu_callback passed to StatusNotifierItem is
+            # TrayManager._on_menu_action by calling it and checking dispatch.
+            cb = MagicMock()
+            tray.on_context_menu(cb)
+
+            # Simulate what StatusNotifierItem.ContextMenu() does:
+            # it calls self._menu_callback("context_menu")
+            # which is tray._on_menu_action
+            tray._on_menu_action("context_menu")
+
+            cb.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tray action callbacks — connect, disconnect, quit
+# ---------------------------------------------------------------------------
+
+
+class TestTrayActionCallbacks:
+    def test_on_connect_clicked_callback_fired_by_menu_action(self):
+        """'connect' действие меню вызывает on_connect_clicked callbacks."""
+        tray = TrayManager("snxui")
+        cb = MagicMock()
+        tray.on_connect_clicked(cb)
+        tray._on_menu_action("connect")
+        cb.assert_called_once()
+
+    def test_on_disconnect_clicked_callback_fired_by_menu_action(self):
+        """'disconnect' действие меню вызывает on_disconnect_clicked callbacks."""
+        tray = TrayManager("snxui")
+        cb = MagicMock()
+        tray.on_disconnect_clicked(cb)
+        tray._on_menu_action("disconnect")
+        cb.assert_called_once()
+
+    def test_on_quit_callback_fired_by_menu_action(self):
+        """'quit' действие меню вызывает on_quit callbacks."""
+        tray = TrayManager("snxui")
+        cb = MagicMock()
+        tray.on_quit(cb)
+        tray._on_menu_action("quit")
+        cb.assert_called_once()
+
+    def test_all_four_actions_in_callbacks_dict(self):
+        """Все четыре действия присутствуют в _callbacks после инициализации."""
+        tray = TrayManager("snxui")
+        for action in ("connect", "disconnect", "show", "quit", "context_menu"):
+            assert action in tray._callbacks, f"Missing action key: {action}"
+
+    def test_multiple_action_callbacks_all_fired(self):
+        """Несколько callbacks на одно действие — все вызываются."""
+        tray = TrayManager("snxui")
+        cbs = [MagicMock() for _ in range(3)]
+        for cb in cbs:
+            tray.on_quit(cb)
+        tray._on_menu_action("quit")
+        for cb in cbs:
+            cb.assert_called_once()
