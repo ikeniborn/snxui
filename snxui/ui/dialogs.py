@@ -8,6 +8,7 @@ blocking the GTK main loop.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -53,6 +54,7 @@ class PasswordDialog:
 
     Args:
         profile_name: Human-readable name shown in the dialog heading.
+        error_hint: Optional error message shown in red (e.g. after a failed attempt).
 
     Callback signature::
 
@@ -61,11 +63,12 @@ class PasswordDialog:
         password is None when the user cancels.
     """
 
-    def __init__(self, profile_name: str = "") -> None:
+    def __init__(self, profile_name: str = "", error_hint: Optional[str] = None) -> None:
         if not _GTK_AVAILABLE:
             raise ImportError("GTK4/Libadwaita is required for PasswordDialog.")
 
         self._profile_name = profile_name
+        self._error_hint = error_hint
 
     def show(
         self,
@@ -100,6 +103,13 @@ class PasswordDialog:
         heading.add_css_class("title-3")
         heading.set_halign(Gtk.Align.START)
         content_box.append(heading)
+
+        if self._error_hint:
+            error_label = Gtk.Label(label=self._error_hint)
+            error_label.add_css_class("error")
+            error_label.set_halign(Gtk.Align.START)
+            error_label.set_wrap(True)
+            content_box.append(error_label)
 
         prefs_group = Adw.PreferencesGroup()
         password_row = Adw.PasswordEntryRow(title="Password")
@@ -230,6 +240,57 @@ class TwoFactorDialog:
         btn_box.append(ok_btn)
         box.append(btn_box)
         return box
+
+
+# ---------------------------------------------------------------------------
+# Profile field validation helpers
+# ---------------------------------------------------------------------------
+
+_RE_HOSTNAME = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$')
+_RE_BASE32 = re.compile(r'^[A-Z2-7]+=*$')
+
+
+def _clean_server(raw: str) -> str:
+    """Strip URL scheme and trailing path/slash from a server string.
+
+    Converts ``https://vpn.example.com/`` → ``vpn.example.com`` so the
+    raw value is safe to pass to ``snx -s``.
+    """
+    value = raw.strip()
+    for scheme in ("https://", "http://"):
+        if value.lower().startswith(scheme):
+            value = value[len(scheme):]
+    # Drop any trailing path component (e.g. /vpn or /).
+    value = value.split("/")[0].strip()
+    return value
+
+
+def _validate_server(server: str) -> Optional[str]:
+    """Return an error string if *server* is not a valid hostname/IP, else None."""
+    if not server:
+        return "Server hostname is required."
+    if " " in server:
+        return "Server hostname must not contain spaces."
+    if not _RE_HOSTNAME.match(server):
+        return "Invalid server hostname — use a valid hostname or IP address."
+    return None
+
+
+def _validate_username(username: str) -> Optional[str]:
+    """Return an error string if *username* is invalid, else None."""
+    if not username:
+        return "Username is required."
+    if " " in username:
+        return "Username must not contain spaces."
+    return None
+
+
+def _validate_totp_secret(secret: str) -> Optional[str]:
+    """Return an error string if *secret* is not valid Base32, else None."""
+    normalised = secret.upper().replace(" ", "")
+    if not _RE_BASE32.match(normalised):
+        return "TOTP secret must be a valid Base32 string (A–Z, 2–7)."
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -413,13 +474,28 @@ class ProfileDialog:
         save_btn.add_css_class("suggested-action")
 
         def _on_save(_btn: object) -> None:
-            server = rows["server"].get_text().strip()
+            raw_server = rows["server"].get_text()
+            server = _clean_server(raw_server)
             username = rows["user"].get_text().strip()
-            if not server or not username:
-                missing = "Server" if not server else "Username"
-                error_label.set_label(f"{missing} is required.")
+
+            err = _validate_server(server) or _validate_username(username)
+            if err is None:
+                # Validate TOTP secret only when a secret was entered.
+                method_idx = rows["2fa_method"].get_selected()
+                totp_text = rows["totp_secret"].get_text().strip()
+                if method_idx in (1, 2) and totp_text:
+                    err = _validate_totp_secret(totp_text)
+
+            if err:
+                error_label.set_label(err)
                 error_label.set_visible(True)
                 return
+
+            # Reflect the cleaned server value back into the widget so the
+            # user sees the normalised form (e.g. scheme stripped).
+            if server != raw_server.strip():
+                rows["server"].set_text(server)
+
             error_label.set_visible(False)
             # Read ALL widget values BEFORE closing.  dialog.close() schedules
             # widget destruction; reading after is fragile.  Same rule as
@@ -495,8 +571,8 @@ class AboutDialog:
             version=__version__,
             comments="GUI client for Check Point SNX VPN",
             license_type=Gtk.License.GPL_3_0,
-            website="https://github.com/snxui/snxui",
-            issue_url="https://github.com/snxui/snxui/issues",
+            website="https://github.com/ikeniborn/snxui",
+            issue_url="https://github.com/ikeniborn/snxui/issues",
         )
 
         dialog.present(parent)

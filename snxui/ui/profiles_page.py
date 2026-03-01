@@ -13,7 +13,7 @@ Layout:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import Callable, TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from snxui.core import ProfileManager, CredentialStore
@@ -57,8 +57,20 @@ class ProfilesPage:
 
         self._pm = profile_manager
         self._cs = credential_store
+        self._on_profiles_changed: Optional[Callable[[], None]] = None
         self._build_widget()
         self.refresh()
+
+    def set_on_profiles_changed(self, callback: Callable[[], None]) -> None:
+        """Register a callback invoked after any create/update/delete."""
+        self._on_profiles_changed = callback
+
+    def _notify_profiles_changed(self) -> None:
+        if self._on_profiles_changed is not None:
+            try:
+                self._on_profiles_changed()
+            except Exception:
+                logger.exception("profiles_changed callback raised.")
 
     # ------------------------------------------------------------------
     # Widget construction
@@ -168,6 +180,7 @@ class ProfilesPage:
             except Exception as exc:
                 logger.error("Failed to create profile: %s", exc)
             self.refresh()
+            self._notify_profiles_changed()
 
         ProfileDialog(profile=None, callback=_on_saved).show(self._page.get_root())
 
@@ -187,6 +200,7 @@ class ProfilesPage:
             except Exception as exc:
                 logger.error("Failed to update profile: %s", exc)
             self.refresh()
+            self._notify_profiles_changed()
 
         ProfileDialog(profile=profile, callback=_on_saved).show(self._page.get_root())
 
@@ -228,6 +242,7 @@ class ProfilesPage:
                             exc,
                         )
                 self.refresh()
+                self._notify_profiles_changed()
 
         dialog.connect("response", _on_response)
         # Present relative to the page's root window if possible.

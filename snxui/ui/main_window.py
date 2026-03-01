@@ -149,6 +149,7 @@ class MainWindow:
             profile_manager=self._profile_manager,
             credential_store=self._credential_store,
         )
+        self._profiles_page.set_on_profiles_changed(self._home_page.refresh_profiles)
         page_profiles = self._stack.add_titled(
             self._profiles_page.widget, "profiles", "Profiles"
         )
@@ -185,9 +186,57 @@ class MainWindow:
     def _connect_tray(self) -> None:
         """Wire tray callbacks to window actions."""
         self._tray_manager.on_show_window(self.present)
-        self._tray_manager.on_connect_clicked(self._home_page._do_connect)
-        self._tray_manager.on_disconnect_clicked(self._home_page._do_disconnect)
+        self._tray_manager.on_connect_clicked(self._home_page.do_connect)
+        self._tray_manager.on_disconnect_clicked(self._home_page.do_disconnect)
         self._tray_manager.on_quit(self._app.quit)
+        self._tray_manager.on_context_menu(self._show_tray_context_menu)
+        self._register_tray_actions()
+
+    def _register_tray_actions(self) -> None:
+        """Register GAction instances used by the tray context menu."""
+        self._tray_connect_action = Gio.SimpleAction.new("tray-connect", None)
+        self._tray_connect_action.connect("activate", lambda *_: self._home_page.do_connect())
+        self._app.add_action(self._tray_connect_action)
+
+        self._tray_disconnect_action = Gio.SimpleAction.new("tray-disconnect", None)
+        self._tray_disconnect_action.connect("activate", lambda *_: self._home_page.do_disconnect())
+        self._app.add_action(self._tray_disconnect_action)
+
+        profiles_action = Gio.SimpleAction.new("tray-profiles", None)
+        profiles_action.connect(
+            "activate",
+            lambda *_: (self._stack.set_visible_child_name("profiles"), self.present()),
+        )
+        self._app.add_action(profiles_action)
+
+    def _show_tray_context_menu(self) -> None:
+        """Show a popup context menu anchored to the main window (GTK4 approach)."""
+        from snxui.core.types import ConnectionState
+
+        # Dismiss any previously created popover that may still be open.
+        if getattr(self, "_tray_popover", None) is not None:
+            self._tray_popover.popdown()
+
+        try:
+            state = self._snx_backend.get_cached_status().state
+        except Exception:
+            state = ConnectionState.DISCONNECTED
+
+        connected = state == ConnectionState.CONNECTED
+        self._tray_connect_action.set_enabled(not connected)
+        self._tray_disconnect_action.set_enabled(connected)
+
+        menu = Gio.Menu()
+        menu.append("Connect", "app.tray-connect")
+        menu.append("Disconnect", "app.tray-disconnect")
+        menu.append("View Profiles", "app.tray-profiles")
+        menu.append("Quit", "app.quit")
+
+        self._tray_popover = Gtk.PopoverMenu.new_from_model(menu)
+        self._tray_popover.set_parent(self._win)
+        self._tray_popover.set_has_arrow(False)
+        self._win.present()
+        self._tray_popover.popup()
 
     # ------------------------------------------------------------------
     # Public API

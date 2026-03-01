@@ -258,6 +258,22 @@ class HomePage:
         self._connecting = False
         if self._tray is not None:
             self._tray.set_error(err)
+        if status.profile and self._is_auth_failure(err):
+            self._retry_password_after_failure(status.profile, err)
+
+    @staticmethod
+    def _is_auth_failure(error_message: str) -> bool:
+        """Return True if the error message indicates wrong credentials."""
+        keywords = ("authentication failed", "invalid password", "access denied", "login failed")
+        return any(kw in error_message.lower() for kw in keywords)
+
+    def _retry_password_after_failure(self, profile: "Profile", error_msg: str) -> None:
+        """Clear the saved (wrong) password and re-show the password dialog."""
+        try:
+            self._cs.delete_password(profile.id)
+        except Exception:
+            logger.debug("Could not clear saved password for profile %s.", profile.id)
+        self._ask_password_then_connect(profile, error_hint=error_msg)
 
     def _apply_disconnected(self) -> None:
         """Update UI for the DISCONNECTED state."""
@@ -281,6 +297,22 @@ class HomePage:
             self._apply_status(status)
         except Exception:
             logger.exception("Failed to get initial status.")
+
+    # ------------------------------------------------------------------
+    # Public action API (used by MainWindow tray wiring)
+    # ------------------------------------------------------------------
+
+    def do_connect(self) -> None:
+        """Initiate VPN connection (same as clicking the Connect button)."""
+        self._do_connect()
+
+    def do_disconnect(self) -> None:
+        """Initiate VPN disconnection (same as clicking the Disconnect button)."""
+        self._do_disconnect()
+
+    def refresh_profiles(self) -> None:
+        """Reload the profile dropdown (call after external profile changes)."""
+        self._refresh_profiles()
 
     # ------------------------------------------------------------------
     # Connect / Disconnect logic
@@ -353,7 +385,9 @@ class HomePage:
         else:
             self._ask_password_then_connect(profile)
 
-    def _ask_password_then_connect(self, profile: "Profile") -> None:
+    def _ask_password_then_connect(
+        self, profile: "Profile", error_hint: Optional[str] = None
+    ) -> None:
         """Show the PasswordDialog, then connect if the user confirms."""
         from snxui.ui.dialogs import PasswordDialog
 
@@ -373,8 +407,12 @@ class HomePage:
                     logger.warning("Failed to save password to keyring.")
             self._start_connect(profile, password)
 
-        dialog = PasswordDialog(profile_name=profile.name or profile.server)
-        dialog.show(callback=_on_response)
+        parent = self._page.get_root()
+        dialog = PasswordDialog(
+            profile_name=profile.name or profile.server,
+            error_hint=error_hint,
+        )
+        dialog.show(callback=_on_response, parent=parent)
 
     def _start_connect(self, profile: "Profile", password: str) -> None:
         """Launch the SNX connect in a background thread."""

@@ -385,7 +385,7 @@ class TestProfileDialog:
         )
         on_save(None)
 
-        error_label.set_label.assert_called_with("Server is required.")
+        error_label.set_label.assert_called_with("Server hostname is required.")
         error_label.set_visible.assert_called_with(True)
         callback.assert_not_called()
 
@@ -466,8 +466,8 @@ class TestAboutDialog:
                     AboutDialog().show()
 
         call_kwargs = local_adw.AboutDialog.call_args[1]
-        assert call_kwargs.get("website") == "https://github.com/snxui/snxui"
-        assert call_kwargs.get("issue_url") == "https://github.com/snxui/snxui/issues"
+        assert call_kwargs.get("website") == "https://github.com/ikeniborn/snxui"
+        assert call_kwargs.get("issue_url") == "https://github.com/ikeniborn/snxui/issues"
 
     def test_show_does_nothing_without_gtk(self, caplog: pytest.LogCaptureFixture) -> None:
         from snxui.ui import dialogs as dlg_mod

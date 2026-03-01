@@ -20,7 +20,24 @@ Graphical client for Check Point SNX VPN on Ubuntu/Debian with support for GNOME
 
 ## Installation
 
-### Option 1: pip (development)
+### Option 1: Release (recommended)
+
+Download the latest `.deb` or AppImage from the [Releases page](https://github.com/ikeniborn/snxui/releases).
+
+**Debian/Ubuntu package:**
+```bash
+# Download the .deb from https://github.com/ikeniborn/snxui/releases
+sudo apt install ./snxui_*.deb
+```
+
+**AppImage:**
+```bash
+# Download the AppImage from https://github.com/ikeniborn/snxui/releases
+chmod +x snxui-*.AppImage
+./snxui-*.AppImage
+```
+
+### Option 2: pip (development)
 
 ```bash
 sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-dbus \
@@ -30,7 +47,7 @@ pip install -e .
 sudo install -m644 snxui/data/com.snxui.policy /usr/share/polkit-1/actions/
 ```
 
-### Option 2: make install
+### Option 3: make install
 
 ```bash
 make install-deps
