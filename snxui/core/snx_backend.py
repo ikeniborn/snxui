@@ -767,17 +767,17 @@ class SNXBackend:
         Returns:
             List of argument strings (without the binary name).
         """
-        login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
-        args: list[str] = [
-            "-s", profile.server,
-            "-u", login,
-        ]
+        args: list[str] = ["-s", profile.server]
+        # SNX requires EITHER -u <user> OR -c <certfile>, not both.
+        if profile.certificate:
+            args += ["-c", profile.certificate]
+        else:
+            login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
+            args += ["-u", login]
         if profile.ssl_port != 443:
             args += ["-p", str(profile.ssl_port)]
         if profile.ca_list:
             args += ["-l", profile.ca_list]
-        if profile.certificate:
-            args += ["-c", profile.certificate]
         if not profile.reauth:
             args.append("-n")
         if profile.cipher:

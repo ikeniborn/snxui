@@ -481,8 +481,16 @@ class ProfileDialog:
             raw_server = rows["server"].get_text()
             server = _clean_server(raw_server)
             username = rows["user"].get_text().strip()
+            certificate = rows["cert"].get_text().strip()
 
-            err = _validate_server(server) or _validate_username(username)
+            err = _validate_server(server)
+            if err is None:
+                if username and certificate:
+                    # SNX usage: {-u <user> | -c <certfile>} — mutually exclusive.
+                    err = "Username and Certificate are mutually exclusive — fill only one."
+                elif not certificate:
+                    # Username/password auth: username is required.
+                    err = _validate_username(username)
             if err is None:
                 # Validate TOTP secret only when a secret was entered.
                 method_idx = rows["2fa_method"].get_selected()
