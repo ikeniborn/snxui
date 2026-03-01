@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from snxui.core import ProfileManager, CredentialStore, SNXBackend
     from snxui.core.types import ConnectionStatus, Profile, TwoFactorCallback
+    from snxui.system import TrayManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class HomePage:
         profile_manager: "ProfileManager",
         credential_store: "CredentialStore",
         snx_backend: "SNXBackend",
+        tray_manager: "Optional[TrayManager]" = None,
     ) -> None:
         if not _GTK_AVAILABLE:
             raise ImportError("GTK4/Libadwaita is required for HomePage.")
@@ -58,6 +60,7 @@ class HomePage:
         self._pm = profile_manager
         self._cs = credential_store
         self._backend = snx_backend
+        self._tray = tray_manager
         self._profiles: list["Profile"] = []
         self._connecting = False
 
@@ -218,6 +221,9 @@ class HomePage:
         self._spinner.set_visible(False)
         self._connect_btn.set_sensitive(True)
         self._connecting = False
+        if self._tray is not None:
+            profile_name = status.profile.name or status.profile.server if status.profile else ""
+            self._tray.set_connected(True, profile_name)
 
     def _apply_connecting(self) -> None:
         """Update UI for the CONNECTING state."""
@@ -250,6 +256,8 @@ class HomePage:
         self._spinner.set_spinning(False)
         self._spinner.set_visible(False)
         self._connecting = False
+        if self._tray is not None:
+            self._tray.set_error(err)
 
     def _apply_disconnected(self) -> None:
         """Update UI for the DISCONNECTED state."""
@@ -263,6 +271,8 @@ class HomePage:
         self._spinner.set_spinning(False)
         self._spinner.set_visible(False)
         self._connecting = False
+        if self._tray is not None:
+            self._tray.set_connected(False)
 
     def _refresh_status(self) -> None:
         """Query the backend for the current status and apply it."""

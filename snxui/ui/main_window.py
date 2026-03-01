@@ -138,6 +138,7 @@ class MainWindow:
             profile_manager=self._profile_manager,
             credential_store=self._credential_store,
             snx_backend=self._snx_backend,
+            tray_manager=self._tray_manager,
         )
         page_home = self._stack.add_titled(
             self._home_page.widget, "home", "Home"
@@ -184,6 +185,9 @@ class MainWindow:
     def _connect_tray(self) -> None:
         """Wire tray callbacks to window actions."""
         self._tray_manager.on_show_window(self.present)
+        self._tray_manager.on_connect_clicked(self._home_page._do_connect)
+        self._tray_manager.on_disconnect_clicked(self._home_page._do_disconnect)
+        self._tray_manager.on_quit(self._app.quit)
 
     # ------------------------------------------------------------------
     # Public API
