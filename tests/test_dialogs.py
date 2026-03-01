@@ -448,8 +448,9 @@ class TestAboutDialog:
                     from snxui.ui.dialogs import AboutDialog
                     AboutDialog().show()
 
+        from snxui import __version__
         call_kwargs = local_adw.AboutDialog.call_args[1]
-        assert call_kwargs.get("version") == "0.1.0"
+        assert call_kwargs.get("version") == __version__
 
     def test_show_sets_github_urls(self) -> None:
         """AboutDialog.show() passes correct website and issue_url to Adw.AboutDialog."""

@@ -1,4 +1,10 @@
 """SNX VPN GUI Client"""
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("snxui")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
 __app_id__ = "com.snxui.SNXui"

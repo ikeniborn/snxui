@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snxui"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GUI client for Check Point SNX VPN on Linux"
 readme = "README.md"
 license = { text = "MIT" }
@@ -46,6 +46,9 @@ snxui = "snxui.app:main"
 Homepage = "https://github.com/snxui/snxui"
 Repository = "https://github.com/snxui/snxui"
 "Bug Tracker" = "https://github.com/snxui/snxui/issues"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.setuptools.packages.find]
 where = ["."]

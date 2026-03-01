@@ -43,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
-VERSION="${1:-0.1.0}"
+VERSION="${1:-$(tr -d '[:space:]' < "${PROJECT_ROOT}/VERSION" 2>/dev/null || echo "0.0.0")}"
 PYTHON_VERSION="${2:-3.11.10}"
 ARCH="${3:-$(uname -m)}"
 
