@@ -285,7 +285,7 @@ class TestConnect:
         assert result is True
 
     def test_connect_connection_failed_before_prompt(self, backend: SNXBackend, profile: Profile) -> None:
-        child = _make_child_mock([2])  # conn failed before password prompt
+        child = _make_child_mock([3])  # idx=3: conn-failed before password prompt
 
         with self._patch_pexpect(child):
             result = backend.connect(profile, "pass")
@@ -294,12 +294,32 @@ class TestConnect:
         assert backend._status.state == ConnectionState.ERROR
 
     def test_connect_timeout(self, backend: SNXBackend, profile: Profile) -> None:
-        child = _make_child_mock([4])  # TIMEOUT at password prompt
+        child = _make_child_mock([5])  # idx=5: TIMEOUT at password prompt
 
         with self._patch_pexpect(child):
             result = backend.connect(profile, "pass")
 
         assert result is False
+
+    def test_connect_gateway_confirm_then_password(self, backend: SNXBackend, profile: Profile) -> None:
+        """SNX asks for gateway cert confirmation before the password prompt.
+
+        Expected flow: gateway confirm (idx=2) → auto-accept "y" →
+        password prompt (idx=0) → connected (idx=0).
+        """
+        child = _make_child_mock([2, 0, 0])  # gateway confirm, password, connected
+        child.before = "Office Mode IP      : 10.1.2.3\n"
+        child.after = "SNX - Connected.\n"
+
+        with self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            result = backend.connect(profile, "pass")
+
+        assert result is True
+        assert backend._status.state == ConnectionState.CONNECTED
+        # y must have been sent in response to the confirmation prompt
+        assert any(
+            call.args == ("y",) for call in child.sendline.call_args_list
+        )
 
     def test_connect_raises_when_pexpect_missing(self, profile: Profile) -> None:
         b = SNXBackend()

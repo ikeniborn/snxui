@@ -120,6 +120,12 @@ _RE_2FA_ANY = re.compile(
     re.IGNORECASE,
 )
 
+# Gateway certificate confirmation: "Do you accept? [y]es/[N]o:"
+_RE_GATEWAY_CONFIRM = re.compile(
+    r"\[y\]es/\[N\]o\s*:|Do\s+you\s+accept\?|Please\s+confirm\s+the\s+connection",
+    re.IGNORECASE,
+)
+
 # Lines to skip when extracting meaningful SNX error output.
 # Covers: banners, copyright, empty lines, usage: header,
 # and CLI option lines like "-s gateway   specify gateway".
@@ -312,6 +318,11 @@ class SNXBackend:
     ) -> Optional[bool]:
         """Wait for SNX to show the password prompt.
 
+        Before asking for the password, SNX may present a gateway certificate
+        confirmation ("Do you accept? [y]es/[N]o:").  This method handles
+        that step automatically by sending "y" and continuing to wait for
+        the actual password prompt.
+
         Pass compiled regex objects directly so that pexpect uses them
         as-is (preserving re.IGNORECASE).  Passing .pattern strings
         causes pexpect to recompile with re.DOTALL only, silently
@@ -324,17 +335,44 @@ class SNXBackend:
             if connection failed before the prompt (caller should return
             ``False``).
         """
-        idx = child.expect(
-            [_RE_PASSWORD, _RE_ALREADY, _RE_CONN_FAILED, pexpect.EOF, pexpect.TIMEOUT],
-            timeout=_PASSWORD_TIMEOUT,
-        )
+        # SNX may ask to confirm the gateway certificate before prompting for
+        # the password.  Allow up to 2 confirmation rounds (normally 1).
+        _CONFIRM_LIMIT = 2
+        for _confirm_round in range(_CONFIRM_LIMIT + 1):
+            idx = child.expect(
+                [
+                    _RE_PASSWORD,           # 0
+                    _RE_ALREADY,            # 1
+                    _RE_GATEWAY_CONFIRM,    # 2 — "Do you accept? [y]es/[N]o:"
+                    _RE_CONN_FAILED,        # 3
+                    pexpect.EOF,            # 4
+                    pexpect.TIMEOUT,        # 5
+                ],
+                timeout=_PASSWORD_TIMEOUT,
+            )
 
-        if idx == 1:
-            return self._handle_already_connected(child, profile, callback)
-        if idx in (2, 3, 4):
-            return self._handle_pre_prompt_failure(child, profile, callback, idx)
-        # idx == 0: password prompt received.
-        return None
+            if idx == 0:
+                # Password prompt received — caller sends the password.
+                return None
+            if idx == 1:
+                return self._handle_already_connected(child, profile, callback)
+            if idx == 2:
+                # Gateway certificate confirmation: auto-accept.
+                before = getattr(child, "before", "") or ""
+                logger.info(
+                    "Gateway certificate confirmation requested (round %d). "
+                    "Auto-accepting. Context: %r",
+                    _confirm_round + 1,
+                    before[-300:],
+                )
+                child.sendline("y")
+                continue
+            # idx 3,4,5 → pre-prompt failure
+            return self._handle_pre_prompt_failure(child, profile, callback, idx - 1)
+
+        # Exceeded confirmation rounds — treat as a connection failure.
+        logger.error("Gateway confirmation loop exceeded %d rounds.", _CONFIRM_LIMIT)
+        return self._handle_pre_prompt_failure(child, profile, callback, 4)
 
     def _handle_already_connected(
         self,
@@ -808,8 +846,6 @@ class SNXBackend:
         Returns:
             List of argument strings (without the binary name).
         """
-        from .types import TunnelType  # avoid circular import at module level
-
         args: list[str] = ["-s", profile.server]
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
@@ -829,14 +865,9 @@ class SNXBackend:
             args.append("-n")
         if profile.cipher:
             args += ["-Z", profile.cipher]
-        # Tunnel type: pass -m ipsec for IPSec/ESP data channel.
-        # SSL is the SNX default; no flag needed.
-        if profile.tunnel_type == TunnelType.IPSEC:
-            args += ["-m", "ipsec"]
-            if profile.esp_settings:
-                args += ["--esp", profile.esp_settings]
-            if profile.ike_settings:
-                args += ["--ike", profile.ike_settings]
+        # Note: tunnel_type (SSL/IPSec) is stored in the profile for future use
+        # or informational purposes; SNX 800008409 does not expose CLI flags for
+        # tunnel mode selection — the data channel is negotiated with the server.
         return args
 
     @staticmethod
