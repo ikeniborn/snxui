@@ -771,13 +771,17 @@ class SNXBackend:
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
             args += ["-c", profile.certificate]
+            # Pass CA dir only in certificate mode.  Some SNX builds
+            # (e.g. 800008409) scan -l directory for *client* certificates
+            # and wrongly report "cannot use both user/pass and certificate
+            # auth" when -l is combined with -u.
+            if profile.ca_list:
+                args += ["-l", profile.ca_list]
         else:
             login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
             args += ["-u", login]
         if profile.ssl_port != 443:
             args += ["-p", str(profile.ssl_port)]
-        if profile.ca_list:
-            args += ["-l", profile.ca_list]
         if not profile.reauth:
             args.append("-n")
         if profile.cipher:

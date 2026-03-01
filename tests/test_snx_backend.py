@@ -174,14 +174,30 @@ class TestBuildArgs:
         args = backend._build_args(profile)
         assert "-n" in args
 
-    def test_ca_list_included(self, backend: SNXBackend, profile: Profile) -> None:
+    def test_ca_list_included_in_cert_mode(self, backend: SNXBackend, profile: Profile) -> None:
+        """CA dir (-l) is passed only when certificate auth is used.
+
+        Some SNX builds (e.g. 800008409) scan the -l directory for *client*
+        certificates and incorrectly report "cannot use both user/pass and
+        certificate auth" when -l is combined with -u.  We therefore omit
+        -l in username/password mode.
+        """
+        profile.certificate = "/home/user/cert.pem"
         profile.ca_list = "/etc/custom/certs"
         args = backend._build_args(profile)
         assert "-l" in args
         assert "/etc/custom/certs" in args
 
+    def test_ca_list_not_passed_in_username_mode(self, backend: SNXBackend, profile: Profile) -> None:
+        """CA dir is NOT passed in username/password mode to avoid SNX build 800008409 bug."""
+        profile.certificate = None
+        profile.ca_list = "/etc/custom/certs"
+        args = backend._build_args(profile)
+        assert "-l" not in args
+
     def test_empty_ca_list_not_in_args(self, backend: SNXBackend, profile: Profile) -> None:
         """When ca_list is cleared, -l must be absent from the SNX command line."""
+        profile.certificate = "/home/user/cert.pem"
         profile.ca_list = ""
         args = backend._build_args(profile)
         assert "-l" not in args
