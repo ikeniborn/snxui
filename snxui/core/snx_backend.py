@@ -117,6 +117,13 @@ _RE_2FA_ANY = re.compile(
     re.IGNORECASE,
 )
 
+# Lines to skip when extracting meaningful SNX error output
+_RE_SNX_BANNER_SKIP = re.compile(
+    r"^(Check\s+Point|SNX\s+-\s+(Network\s+Extension|Connected|Version)"
+    r"|Logging\s+|Copyright|\s*$)",
+    re.IGNORECASE,
+)
+
 # Candidate SNX binary locations (in order of preference)
 _SNX_SEARCH_PATHS: list[Path] = [
     Path("/usr/bin/snx"),
@@ -357,14 +364,9 @@ class SNXBackend:
         Scans output lines from the end, skipping banners and empty lines,
         and returns the first non-trivial line (up to 120 chars).
         """
-        _SKIP = re.compile(
-            r"^(Check\s+Point|SNX\s+-\s+(Network\s+Extension|Connected|Version)"
-            r"|Logging\s+|Copyright|\s*$)",
-            re.IGNORECASE,
-        )
         for line in reversed(output.splitlines()):
             line = line.strip()
-            if line and not _SKIP.match(line):
+            if line and not _RE_SNX_BANNER_SKIP.match(line):
                 return line[:120]
         return ""
 

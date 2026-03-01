@@ -235,6 +235,8 @@ class HomePage:
         self._connect_btn.set_sensitive(False)
         self._spinner.set_spinning(True)
         self._spinner.set_visible(True)
+        if self._tray is not None:
+            self._tray.set_connecting()
 
     def _apply_disconnecting(self) -> None:
         """Update UI for the DISCONNECTING state."""
@@ -253,7 +255,7 @@ class HomePage:
         # Split multi-line messages: first line as title, rest as detail.
         lines = err.strip().splitlines()
         title_line = lines[0] if lines else err
-        detail_line = " ".join(l.strip() for l in lines[1:] if l.strip()) if len(lines) > 1 else ""
+        detail_line = " ".join(ln.strip() for ln in lines[1:] if ln.strip()) if len(lines) > 1 else ""
 
         self._status_label.set_label(f"Error: {title_line}")
         if detail_line:
