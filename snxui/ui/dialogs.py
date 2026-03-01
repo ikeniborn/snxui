@@ -343,25 +343,34 @@ class ProfileDialog:
         dialog.present()
 
     def _build_form_rows(self) -> "tuple[Gtk.ScrolledWindow, dict]":
-        """Build the scrolled form and return (scroll, rows_dict)."""
+        """Build the scrolled form and return (scroll, rows_dict).
+
+        Uses separate ``Adw.PreferencesGroup`` objects for the username and
+        certificate sections so that hiding/showing an entire group is
+        reliable across all Libadwaita versions (toggling visibility on
+        individual rows inside a group can be unreliable).
+        """
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_vexpand(True)
 
         prefs_page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup(title="Profile Details")
-        prefs_page.add(group)
         scroll.set_child(prefs_page)
 
         p = self._profile
+
+        # ── Group 1: identity + auth selector (always visible) ──────────
+        group = Adw.PreferencesGroup(title="Profile Details")
+        prefs_page.add(group)
+
         name_row = Adw.EntryRow(title="Profile Name")
         name_row.set_text(p.name if p else "")
         group.add(name_row)
+
         server_row = Adw.EntryRow(title="Server (hostname)")
         server_row.set_text(p.server if p else "")
         group.add(server_row)
 
-        # Auth mode selector — enforces mutual exclusivity in the UI.
         _cert_initially = bool(p and p.certificate)
         auth_model = Gtk.StringList()
         auth_model.append("Username / Password")
@@ -371,32 +380,48 @@ class ProfileDialog:
         auth_mode_row.set_selected(1 if _cert_initially else 0)
         group.add(auth_mode_row)
 
+        # ── Group 2: username / password fields (hidden in cert mode) ───
+        user_group = Adw.PreferencesGroup()
+        prefs_page.add(user_group)
+
         user_row = Adw.EntryRow(title="Username")
         user_row.set_text(p.username if p else "")
-        group.add(user_row)
+        user_group.add(user_row)
+
         domain_row = Adw.EntryRow(title="Windows Domain (optional)")
         domain_row.set_text(p.domain or "" if p else "")
-        group.add(domain_row)
+        user_group.add(domain_row)
+
+        # ── Group 3: connection settings (always visible) ────────────────
+        conn_group = Adw.PreferencesGroup()
+        prefs_page.add(conn_group)
+
         port_row = Adw.SpinRow.new_with_range(1, 65535, 1)
         port_row.set_title("SSL Port")
         port_row.set_value(p.ssl_port if p else 443)
-        group.add(port_row)
+        conn_group.add(port_row)
+
         ca_row = Adw.EntryRow(title="CA Certificates Path")
         ca_row.set_text(p.ca_list if p else "/etc/ssl/certs")
-        group.add(ca_row)
+        conn_group.add(ca_row)
+
+        # ── Group 4: certificate auth field (hidden in user mode) ────────
+        cert_group = Adw.PreferencesGroup()
+        prefs_page.add(cert_group)
+
         cert_row = Adw.EntryRow(title="Certificate File Path")
         cert_row.set_text(p.certificate or "" if p else "")
-        group.add(cert_row)
+        cert_group.add(cert_row)
+
+        # Save-password belongs with user-auth section.
         save_pwd_row = Adw.SwitchRow(title="Save Password in Keyring")
         save_pwd_row.set_active(p.save_password if p else False)
-        group.add(save_pwd_row)
+        user_group.add(save_pwd_row)
 
         def _on_auth_mode_changed(combo: object, _param: object) -> None:
             cert_mode = combo.get_selected() == 1  # type: ignore[union-attr]
-            user_row.set_visible(not cert_mode)
-            domain_row.set_visible(not cert_mode)
-            save_pwd_row.set_visible(not cert_mode)
-            cert_row.set_visible(cert_mode)
+            user_group.set_visible(not cert_mode)
+            cert_group.set_visible(cert_mode)
 
         auth_mode_row.connect("notify::selected", _on_auth_mode_changed)
         _on_auth_mode_changed(auth_mode_row, None)  # apply initial state
