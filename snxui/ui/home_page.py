@@ -266,10 +266,11 @@ class HomePage:
         err = status.error_message or "Unknown error"
         self._current_error = err  # stored for clipboard copy
 
-        # Split multi-line messages: first line as title, rest as detail.
+        # Line 0 → title in UI.  Line 1 → subtitle in UI.
+        # Lines 2+ (command, raw output) → clipboard only, not shown.
         lines = err.strip().splitlines()
         title_line = lines[0] if lines else err
-        detail_line = " ".join(ln.strip() for ln in lines[1:] if ln.strip()) if len(lines) > 1 else ""
+        detail_line = lines[1].strip() if len(lines) > 1 else ""
 
         self._status_label.set_label(f"Error: {title_line}")
         if detail_line:

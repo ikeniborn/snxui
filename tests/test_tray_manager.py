@@ -139,7 +139,7 @@ class TestSetConnected:
         tray.set_connected(True, "Work VPN")
 
         mock_item.update_icon.assert_called_once_with(
-            _ICON_CONNECTED,
+            "snxui",
             "SNX VPN — Подключено",
             "Профиль: Work VPN",
         )
@@ -154,7 +154,7 @@ class TestSetConnected:
         tray.set_connected(False)
 
         mock_item.update_icon.assert_called_once_with(
-            _ICON_DISCONNECTED,
+            "snxui",
             "SNX VPN — Отключено",
             "Нажмите для подключения",
         )
@@ -170,7 +170,7 @@ class TestSetConnected:
 
         # Должен использоваться generic body
         args = mock_item.update_icon.call_args[0]
-        assert args[0] == _ICON_CONNECTED
+        assert args[0] == "snxui"
         assert "VPN активен" in args[2]
 
     def test_set_connected_no_item_does_not_crash(self):
@@ -207,7 +207,7 @@ class TestSetError:
         tray.set_error("Соединение разорвано")
 
         mock_item.update_icon.assert_called_once_with(
-            _ICON_ERROR,
+            "snxui",
             "SNX VPN — Ошибка",
             "Соединение разорвано",
         )

@@ -347,7 +347,21 @@ class SNXBackend:
             base = "Connection failed — check server address and network."
 
         detail = self._extract_snx_error(raw_output)
-        error_message = f"{base}\n{detail}" if detail else base
+
+        # Lines 0-1: shown in UI.  Lines 2+: included in clipboard only.
+        msg_parts = [base]
+        if detail:
+            msg_parts.append(detail)
+        try:
+            binary = self._find_snx_binary()
+            cmd_args = self._build_args(profile)
+            msg_parts.append(f"Command: {binary} {' '.join(cmd_args)}")
+        except Exception:
+            pass
+        if raw_output:
+            msg_parts.append("---")
+            msg_parts.append(raw_output[:800])
+        error_message = "\n".join(msg_parts)
 
         with self._lock:
             snapshot = self._update_status(

@@ -79,10 +79,12 @@ if _DBUS_AVAILABLE:
             bus: "dbus.SessionBus",
             app_id: str = "snxui",
             menu_callback: Optional[Callable[[str], None]] = None,
+            icon_theme_path: str = "",
         ) -> None:
             self._app_id = app_id
             self._status = "Active"
-            self._icon_name = _ICON_DISCONNECTED
+            self._icon_name = "snxui"
+            self._icon_theme_path = icon_theme_path
             self._title = "SNX VPN"
             self._tooltip_title = "SNX VPN"
             self._tooltip_body = "Отключено"
@@ -117,7 +119,7 @@ if _DBUS_AVAILABLE:
                 "ToolTipTitle": dbus.String(self._tooltip_title),
                 "ToolTipBody": dbus.String(self._tooltip_body),
                 "ToolTipIconName": dbus.String(self._icon_name),
-                "IconThemePath": dbus.String(""),
+                "IconThemePath": dbus.String(self._icon_theme_path),
                 "Menu": dbus.ObjectPath("/NO_DBUSMENU"),
                 "ItemIsMenu": dbus.Boolean(False),
                 "OverlayIconName": dbus.String(""),
@@ -290,6 +292,7 @@ class TrayManager:
                 self._bus,
                 app_id=self._app_id,
                 menu_callback=self._on_menu_action,
+                icon_theme_path=self._detect_icon_theme_path(),
             )
             self._register_with_watcher()
             logger.info("TrayManager: SNI трей запущен (app_id=%s).", self._app_id)
@@ -323,25 +326,21 @@ class TrayManager:
             return
 
         if connected:
-            icon = _ICON_CONNECTED
             title = "SNX VPN — Подключено"
             body = f"Профиль: {profile_name}" if profile_name else "VPN активен"
-            status = "Active"
         else:
-            icon = _ICON_DISCONNECTED
             title = "SNX VPN — Отключено"
             body = "Нажмите для подключения"
-            status = "Active"
 
-        self._item.update_icon(icon, title, body)
-        self._item.update_status(status)
+        self._item.update_icon("snxui", title, body)
+        self._item.update_status("Active")
         logger.debug("TrayManager: set_connected(%s, %r)", connected, profile_name)
 
     def set_connecting(self) -> None:
         """Показать иконку «подключение» в трее."""
         if self._item is None:
             return
-        self._item.update_icon(_ICON_CONNECTING, "SNX VPN — Подключение…", "Установка соединения")
+        self._item.update_icon("snxui", "SNX VPN — Подключение…", "Установка соединения")
         self._item.update_status("Active")
         logger.debug("TrayManager: set_connecting()")
 
@@ -353,7 +352,7 @@ class TrayManager:
         """
         if self._item is None:
             return
-        self._item.update_icon(_ICON_ERROR, "SNX VPN — Ошибка", error)
+        self._item.update_icon("snxui", "SNX VPN — Ошибка", error)
         self._item.update_status("NeedsAttention")
         logger.debug("TrayManager: set_error(%r)", error)
 
@@ -393,6 +392,45 @@ class TrayManager:
                 cb()
             except Exception:
                 logger.exception("TrayManager: исключение в callback %r", action)
+
+    @staticmethod
+    def _detect_icon_theme_path() -> str:
+        """Return the XDG icon theme root that contains the snxui app icon.
+
+        Checks standard installation paths first.  Falls back to the package
+        data directory (dev mode) by creating a minimal icon theme structure
+        in a temporary directory.
+        """
+        from pathlib import Path
+
+        # Standard system / user installation paths.
+        for theme_root in (
+            Path("/usr/share/icons"),
+            Path("/usr/local/share/icons"),
+            Path.home() / ".local" / "share" / "icons",
+        ):
+            if (theme_root / "hicolor" / "scalable" / "apps" / "snxui.svg").exists():
+                logger.debug("TrayManager: found snxui icon in %s", theme_root)
+                return str(theme_root)
+
+        # Dev mode: icon is in the package data directory (not installed).
+        try:
+            import importlib.resources as _ir
+            import snxui.data as _data_pkg
+            import shutil
+            import tempfile
+            pkg_icons = Path(str(_ir.files(_data_pkg))) / "icons" / "snxui.svg"
+            if pkg_icons.exists():
+                tmp = Path(tempfile.mkdtemp(prefix="snxui-tray-"))
+                icon_dir = tmp / "hicolor" / "scalable" / "apps"
+                icon_dir.mkdir(parents=True)
+                shutil.copy(str(pkg_icons), str(icon_dir / "snxui.svg"))
+                logger.debug("TrayManager: created dev icon theme in %s", tmp)
+                return str(tmp)
+        except Exception:
+            logger.debug("TrayManager: dev icon theme setup failed", exc_info=True)
+
+        return ""
 
     def _register_with_watcher(self) -> None:
         """Зарегистрировать SNI объект в StatusNotifierWatcher (если доступен).
