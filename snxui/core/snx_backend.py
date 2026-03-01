@@ -106,14 +106,17 @@ _RE_2FA_GENERIC = re.compile(
     re.IGNORECASE,
 )
 
-# Объединённый паттерн для expect() списка
+# Объединённый паттерн для expect() списка.
+# Порядок альтернатив не влияет на приоритет — важен порядок в expect()-списке.
 _RE_2FA_ANY = re.compile(
     r"Enter\s+SecurID\s+PASSCODE\s*:|SecurID\s+passcode\s*:|PASSCODE\s*:|"
-    r"Enter\s+RADIUS\s+(?:token|passcode)\s*:|RADIUS\s+(?:token|passcode)\s*:|"
+    r"Enter\s+RADIUS\s+(?:token|passcode)\s*:|RADIUS\s*:.*(?:token|passcode|code)\s*:|"
     r"\bToken\s*:|"
     r"Challenge\s*:\s*\S+|Enter\s+response\s*:|"
-    r"Enter\s+one.time\s+(?:password|code)\s*:|Verification\s+code\s*:|"
-    r"\bOTP\s*:|Two.factor\s+code\s*:",
+    r"Enter\s+(?:your\s+)?one.time\s+(?:password|code)\s*:|"
+    r"Please\s+enter\s+(?:your\s+)?one.time\s+password\s*:|"
+    r"Enter\s+(?:your\s+)?(?:token|passcode)\s*:|"
+    r"Verification\s+code\s*:|\bOTP\s*:|Two.factor\s+code\s*:",
     re.IGNORECASE,
 )
 
@@ -468,11 +471,12 @@ class SNXBackend:
             idx = child.expect(
                 [
                     _RE_CONNECTED,    # 0
-                    _RE_AUTH_FAILED,  # 1
-                    _RE_CONN_FAILED,  # 2
-                    pexpect.EOF,      # 3
-                    pexpect.TIMEOUT,  # 4
-                    _RE_2FA_ANY,      # 5
+                    _RE_2FA_ANY,      # 1 — high priority: catch before auth-failed
+                    _RE_PASSWORD,     # 2 — second "password:" prompt = OTP request
+                    _RE_AUTH_FAILED,  # 3
+                    _RE_CONN_FAILED,  # 4
+                    pexpect.EOF,      # 5
+                    pexpect.TIMEOUT,  # 6
                 ],
                 timeout=_CONNECT_TIMEOUT,
             )
@@ -483,14 +487,18 @@ class SNXBackend:
             if idx == 0:
                 return self._finish_connected(child, profile, callback, full_output)
 
-            if idx in (1, 2, 3, 4):
-                return self._handle_connect_failure(child, profile, callback, idx, full_output)
+            if idx in (1, 2):
+                # idx 1 = explicit 2FA prompt; idx 2 = repeated "password:" = OTP
+                if idx == 2:
+                    logger.debug("Second password prompt detected — treating as OTP request.")
+                sent = self._handle_2fa_prompt(child, profile, callback, two_factor_callback, full_output)
+                if sent is False:
+                    return False
+                # sent is True → code was sent, continue loop
+                continue
 
-            # idx == 5: 2FA prompt
-            sent = self._handle_2fa_prompt(child, profile, callback, two_factor_callback, full_output)
-            if sent is False:
-                return False
-            # sent is True → code was sent, continue loop
+            # idx 3,4,5,6 → map to legacy indices 1,2,3,4 for _handle_connect_failure
+            return self._handle_connect_failure(child, profile, callback, idx - 2, full_output)
 
         return self._handle_2fa_limit_exceeded(child, profile, callback)
 

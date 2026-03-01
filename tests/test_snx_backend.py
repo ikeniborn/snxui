@@ -261,7 +261,7 @@ class TestConnect:
         assert backend._status.state == ConnectionState.CONNECTED
 
     def test_connect_auth_failed(self, backend: SNXBackend, profile: Profile) -> None:
-        child = _make_child_mock([0, 1])  # password prompt, then auth failed
+        child = _make_child_mock([0, 3])  # password prompt, then auth failed (idx=3)
 
         with self._patch_pexpect(child), self._patch_monitor():
             result = backend.connect(profile, "wrongpass")
@@ -769,9 +769,9 @@ class TestConnect2FA:
     def test_rsa_securid_then_connected(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """2FA prompt (idx=5) → sendline(code) → connected (idx=0)."""
-        # expect calls: [password_prompt=0, 2fa=5, connected=0]
-        child = _make_child_mock([0, 5, 0])
+        """2FA prompt (idx=1) → sendline(code) → connected (idx=0)."""
+        # expect calls: [password_prompt=0, 2fa=1, connected=0]
+        child = _make_child_mock([0, 1, 0])
         child.before = ""
         child.after = "SNX - Connected."
 
@@ -792,7 +792,7 @@ class TestConnect2FA:
         self, backend: SNXBackend, profile: Profile
     ) -> None:
         """Generic OTP prompt resolves to successful connection."""
-        child = _make_child_mock([0, 5, 0])
+        child = _make_child_mock([0, 1, 0])
         child.before = ""
         child.after = "SNX - Connected."
 
@@ -811,7 +811,7 @@ class TestConnect2FA:
         self, backend: SNXBackend, profile: Profile
     ) -> None:
         """The full prompt text must be passed to two_factor_callback."""
-        child = _make_child_mock([0, 5, 0])
+        child = _make_child_mock([0, 1, 0])
         child.before = "Challenge: DEADBEEF\n"
         child.after = ""  # after idx=5 expect
 
@@ -833,7 +833,7 @@ class TestConnect2FA:
         self, backend: SNXBackend, profile: Profile
     ) -> None:
         """When callback returns None, connection fails with 'cancelled' message."""
-        child = _make_child_mock([0, 5])
+        child = _make_child_mock([0, 1])
         child.before = "Enter SecurID PASSCODE:"
         child.after = ""
 
@@ -853,7 +853,7 @@ class TestConnect2FA:
         self, backend: SNXBackend, profile: Profile
     ) -> None:
         """When SNX requests 2FA but no callback is provided, error must mention Configure."""
-        child = _make_child_mock([0, 5])
+        child = _make_child_mock([0, 1])
         child.before = "Enter SecurID PASSCODE:"
         child.after = ""
 
@@ -869,7 +869,7 @@ class TestConnect2FA:
     ) -> None:
         """After _2FA_LOOP_LIMIT (3) rounds, connection is aborted."""
         # password_prompt=0, then 4 2FA prompts — loop limit (3) kicks in after 3
-        child = _make_child_mock([0, 5, 5, 5, 5])
+        child = _make_child_mock([0, 1, 1, 1, 1])
         child.before = "OTP:"
         child.after = ""
 
@@ -901,6 +901,26 @@ class TestConnect2FA:
 
         assert result is True
         assert backend._status.state == ConnectionState.CONNECTED
+
+    def test_second_password_prompt_treated_as_otp(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Second 'password:' prompt (idx=2) is treated as an OTP request."""
+        # password_prompt=0, second_password=2 (OTP), connected=0
+        child = _make_child_mock([0, 2, 0])
+        child.before = "Please enter your password:"
+        child.after = "SNX - Connected."
+
+        two_factor_callback = MagicMock(return_value="123456")
+
+        with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+            result = backend.connect(
+                profile, "pass",
+                two_factor_callback=two_factor_callback,
+            )
+
+        assert result is True
+        child.sendline.assert_any_call("123456")
 
     def test_2fa_regex_exported(self) -> None:
         """_RE_2FA_ANY must be importable from snx_backend for tests/validation."""
