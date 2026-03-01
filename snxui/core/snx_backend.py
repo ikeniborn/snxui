@@ -117,10 +117,12 @@ _RE_2FA_ANY = re.compile(
     re.IGNORECASE,
 )
 
-# Lines to skip when extracting meaningful SNX error output
+# Lines to skip when extracting meaningful SNX error output.
+# Covers: banners, copyright, empty lines, usage: header,
+# and CLI option lines like "-s gateway   specify gateway".
 _RE_SNX_BANNER_SKIP = re.compile(
     r"^(Check\s+Point|SNX\s+-\s+(Network\s+Extension|Connected|Version)"
-    r"|Logging\s+|Copyright|\s*$)",
+    r"|Logging\s+|Copyright|usage\s*:|-[a-z]\b|\s*$)",
     re.IGNORECASE,
 )
 

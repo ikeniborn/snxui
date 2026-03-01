@@ -10,6 +10,7 @@ $(VENV):
 	python3 -m venv --system-site-packages $(VENV)
 
 install-deps: $(VENV)
+	find $(VENV)/lib -maxdepth 4 -name '~nxui*' -type d -exec rm -rf {} + 2>/dev/null || true
 	$(VENV)/bin/pip install -e ".[dev]"
 	sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 	    python3-dbus python3-keyring python3-secretstorage python3-pexpect \
