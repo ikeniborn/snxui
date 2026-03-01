@@ -155,10 +155,12 @@ if _DBUS_AVAILABLE:
         def ContextMenu(self, x: int, y: int) -> None:
             """Правая кнопка мыши — контекстное меню.
 
-            В полной реализации здесь был бы dbus-menu. В данной версии
-            выдаём сигнал activate для простоты.
+            Dispatches the 'context_menu' action to the registered callback so
+            the application layer can show a GTK popup menu via GLib.idle_add.
             """
             logger.debug("TrayItem.ContextMenu called (%d, %d)", x, y)
+            if self._menu_callback:
+                self._menu_callback("context_menu")
 
         @dbus.service.method(dbus_interface=_SNI_INTERFACE)
         def Scroll(self, delta: int, orientation: str) -> None:
@@ -256,6 +258,7 @@ class TrayManager:
             "disconnect": [],
             "show": [],
             "quit": [],
+            "context_menu": [],
         }
 
     # ------------------------------------------------------------------
@@ -360,6 +363,10 @@ class TrayManager:
     def on_quit(self, callback: Callable[[], None]) -> None:
         """Зарегистрировать обработчик выхода из приложения."""
         self._callbacks["quit"].append(callback)
+
+    def on_context_menu(self, callback: Callable[[], None]) -> None:
+        """Зарегистрировать обработчик запроса контекстного меню (правая кнопка)."""
+        self._callbacks["context_menu"].append(callback)
 
     # ------------------------------------------------------------------
     # Вспомогательные методы
