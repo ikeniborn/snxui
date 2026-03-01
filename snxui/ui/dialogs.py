@@ -363,6 +363,9 @@ class ProfileDialog:
         user_row = Adw.EntryRow(title="Username")
         user_row.set_text(p.username if p else "")
         group.add(user_row)
+        domain_row = Adw.EntryRow(title="Windows Domain (optional)")
+        domain_row.set_text(p.domain or "" if p else "")
+        group.add(domain_row)
         port_row = Adw.SpinRow.new_with_range(1, 65535, 1)
         port_row.set_title("SSL Port")
         port_row.set_value(p.ssl_port if p else 443)
@@ -386,6 +389,7 @@ class ProfileDialog:
 
         rows = {
             "name": name_row, "server": server_row, "user": user_row,
+            "domain": domain_row,
             "port": port_row, "ca": ca_row, "cert": cert_row,
             "save_pwd": save_pwd_row,
             "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
@@ -536,6 +540,7 @@ class ProfileDialog:
             name=rows["name"].get_text().strip(),
             server=server,
             username=username,
+            domain=rows["domain"].get_text().strip() or None,
             ssl_port=int(rows["port"].get_value()),
             ca_list=rows["ca"].get_text().strip() or "/etc/ssl/certs",
             certificate=rows["cert"].get_text().strip() or None,

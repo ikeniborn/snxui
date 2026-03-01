@@ -287,7 +287,7 @@ class SNXBackend:
         if idx == 1:
             return self._handle_already_connected(child, profile, callback)
         if idx in (2, 3, 4):
-            return self._handle_pre_prompt_failure(child, profile, callback)
+            return self._handle_pre_prompt_failure(child, profile, callback, idx)
         # idx == 0: password prompt received.
         return None
 
@@ -317,19 +317,56 @@ class SNXBackend:
         child: "pexpect.spawn",
         profile: Profile,
         callback: Optional[Callable[[ConnectionStatus], None]],
+        idx: int = 2,
     ) -> bool:
-        """Handle SNX failure before reaching the password prompt."""
-        output = getattr(child, "before", "") or ""
-        logger.error("SNX connection failed before password prompt. Output: %r", output)
+        """Handle SNX failure before reaching the password prompt.
+
+        Args:
+            idx: pexpect match index — 2=conn-failed regex, 3=EOF, 4=TIMEOUT.
+        """
+        before = getattr(child, "before", "") or ""
+        after = child.after if isinstance(child.after, str) else ""
+        raw_output = (before + after).strip()
+        logger.error("SNX pre-prompt failure (idx=%d). Output: %r", idx, raw_output)
+
+        # Build a user-visible message: base cause + first meaningful SNX line.
+        if idx == 4:
+            base = "Connection timed out — server unreachable or port blocked."
+        elif idx == 3:
+            base = "SNX exited unexpectedly — check server address."
+        else:
+            base = "Connection failed — check server address and network."
+
+        detail = self._extract_snx_error(raw_output)
+        error_message = f"{base}\n{detail}" if detail else base
+
         with self._lock:
             snapshot = self._update_status(
                 ConnectionState.ERROR,
                 profile=profile,
-                error_message="Connection failed before password prompt.",
+                error_message=error_message,
             )
         child.close()
         self._invoke_callback(callback, snapshot)
         return False
+
+    @staticmethod
+    def _extract_snx_error(output: str) -> str:
+        """Return the most relevant error line from raw SNX output.
+
+        Scans output lines from the end, skipping banners and empty lines,
+        and returns the first non-trivial line (up to 120 chars).
+        """
+        _SKIP = re.compile(
+            r"^(Check\s+Point|SNX\s+-\s+(Network\s+Extension|Connected|Version)"
+            r"|Logging\s+|Copyright|\s*$)",
+            re.IGNORECASE,
+        )
+        for line in reversed(output.splitlines()):
+            line = line.strip()
+            if line and not _SKIP.match(line):
+                return line[:120]
+        return ""
 
     def _finish_connected(
         self,
@@ -708,9 +745,10 @@ class SNXBackend:
         Returns:
             List of argument strings (without the binary name).
         """
+        login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
         args: list[str] = [
             "-s", profile.server,
-            "-u", profile.username,
+            "-u", login,
         ]
         if profile.ssl_port != 443:
             args += ["-p", str(profile.ssl_port)]

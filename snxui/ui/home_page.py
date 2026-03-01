@@ -97,6 +97,8 @@ class HomePage:
         self._info_label.add_css_class("caption")
         self._info_label.set_opacity(0.6)
         self._info_label.set_margin_bottom(16)
+        self._info_label.set_wrap(True)
+        self._info_label.set_justify(Gtk.Justification.CENTER)
         self._info_label.set_visible(False)
 
         self._spinner = Gtk.Spinner()
@@ -247,8 +249,19 @@ class HomePage:
         """Update UI for the ERROR state."""
         self._status_icon.set_from_icon_name("network-error-symbolic")
         err = status.error_message or "Unknown error"
-        self._status_label.set_label(f"Error: {err}")
-        self._info_label.set_visible(False)
+
+        # Split multi-line messages: first line as title, rest as detail.
+        lines = err.strip().splitlines()
+        title_line = lines[0] if lines else err
+        detail_line = " ".join(l.strip() for l in lines[1:] if l.strip()) if len(lines) > 1 else ""
+
+        self._status_label.set_label(f"Error: {title_line}")
+        if detail_line:
+            self._info_label.set_label(detail_line)
+            self._info_label.set_visible(True)
+        else:
+            self._info_label.set_visible(False)
+
         self._connect_btn.set_label("Connect")
         self._connect_btn.remove_css_class("destructive-action")
         self._connect_btn.add_css_class("suggested-action")
@@ -257,7 +270,7 @@ class HomePage:
         self._spinner.set_visible(False)
         self._connecting = False
         if self._tray is not None:
-            self._tray.set_error(err)
+            self._tray.set_error(title_line)
         if status.profile and self._is_auth_failure(err):
             self._retry_password_after_failure(status.profile, err)
 

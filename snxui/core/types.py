@@ -63,6 +63,7 @@ class Profile:
     name: str = ""
     server: str = ""
     username: str = ""
+    domain: Optional[str] = None  # Windows domain prefix → domain\username sent to SNX
     ssl_port: int = 443
     ca_list: str = "/etc/ssl/certs"
     certificate: Optional[str] = None

@@ -210,7 +210,9 @@ class TestProfileDialog:
         save_row = MagicMock()
 
         # EntryRow returns the mock row objects in sequence.
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, ca_row, cert_row]
+        domain_row = MagicMock()
+        domain_row.get_text.return_value = ""
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 
@@ -302,7 +304,9 @@ class TestProfileDialog:
 
         dialog_mock.close.side_effect = _invalidate_widgets
 
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, ca_row, cert_row]
+        domain_row = MagicMock()
+        domain_row.get_text.return_value = ""
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         # SwitchRow is called twice: save_password and save_totp_secret.
         local_adw.SwitchRow.side_effect = [save_row, save_totp_row]
@@ -361,7 +365,9 @@ class TestProfileDialog:
         port_row.get_value.return_value = 443.0
         save_row.get_active.return_value = False
 
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, ca_row, cert_row]
+        domain_row = MagicMock()
+        domain_row.get_text.return_value = ""
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 

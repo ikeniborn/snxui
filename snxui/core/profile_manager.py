@@ -30,7 +30,7 @@ from .types import Profile, TwoFactorMethod
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 2
+_FILE_FORMAT_VERSION = 3
 
 
 def _xdg_config_home() -> Path:
@@ -57,6 +57,7 @@ def _profile_to_dict(profile: Profile) -> dict:
         "name": profile.name,
         "server": profile.server,
         "username": profile.username,
+        "domain": profile.domain,
         "ssl_port": profile.ssl_port,
         "ca_list": profile.ca_list,
         "certificate": profile.certificate,
@@ -105,6 +106,7 @@ def _profile_from_dict(data: dict) -> Profile:
         name=data.get("name", ""),
         server=data.get("server", ""),
         username=data.get("username", ""),
+        domain=data.get("domain") or None,
         ssl_port=ssl_port,
         ca_list=data.get("ca_list", "/etc/ssl/certs"),
         certificate=data.get("certificate"),
@@ -219,6 +221,10 @@ class ProfileManager:
                 profile_data.setdefault("two_factor_method", "none")
                 profile_data.setdefault("save_totp_secret", False)
             data["version"] = 2
+        if version < 3:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("domain", None)
+            data["version"] = 3
         return data
 
     def _with_file_lock(self, fn: Callable[[], Any]) -> Any:

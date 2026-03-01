@@ -45,10 +45,11 @@ _SNW_INTERFACE = "org.kde.StatusNotifierWatcher"
 _SNW_SERVICE = "org.kde.StatusNotifierWatcher"
 _SNW_PATH = "/StatusNotifierWatcher"
 
-# XDG иконки для состояний
-_ICON_CONNECTED = "network-vpn"
-_ICON_DISCONNECTED = "network-vpn-disconnected"
-_ICON_ERROR = "network-error"
+# XDG иконки для состояний (только symbolic-варианты, которые есть в Adwaita)
+_ICON_CONNECTED = "network-vpn-symbolic"
+_ICON_DISCONNECTED = "network-vpn-disconnected-symbolic"
+_ICON_CONNECTING = "network-vpn-acquiring-symbolic"
+_ICON_ERROR = "network-error-symbolic"
 
 
 class _StatusNotifierItemBase:
@@ -141,10 +142,14 @@ if _DBUS_AVAILABLE:
 
         @dbus.service.method(dbus_interface=_SNI_INTERFACE)
         def Activate(self, x: int, y: int) -> None:
-            """Клик по иконке трея — показать/скрыть окно."""
+            """Левый клик по иконке трея — показать контекстное меню.
+
+            GNOME с AppIndicator не вызывает ContextMenu, поэтому левый клик
+            тоже открывает наше GTK PopoverMenu.
+            """
             logger.debug("TrayItem.Activate called (%d, %d)", x, y)
             if self._menu_callback:
-                self._menu_callback("show")
+                self._menu_callback("context_menu")
 
         @dbus.service.method(dbus_interface=_SNI_INTERFACE)
         def SecondaryActivate(self, x: int, y: int) -> None:

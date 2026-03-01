@@ -132,9 +132,10 @@ class ProfilesPage:
 
     def _make_row(self, profile: "Profile") -> "Adw.ActionRow":
         """Build an ActionRow for a single profile."""
+        login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
         row = Adw.ActionRow(
             title=profile.name or "(unnamed)",
-            subtitle=f"{profile.username}@{profile.server}",
+            subtitle=f"{login} · {profile.server}",
         )
 
         # Edit button.

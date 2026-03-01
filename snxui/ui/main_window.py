@@ -202,6 +202,10 @@ class MainWindow:
         self._tray_disconnect_action.connect("activate", lambda *_: self._home_page.do_disconnect())
         self._app.add_action(self._tray_disconnect_action)
 
+        show_action = Gio.SimpleAction.new("tray-show", None)
+        show_action.connect("activate", lambda *_: self.present())
+        self._app.add_action(show_action)
+
         profiles_action = Gio.SimpleAction.new("tray-profiles", None)
         profiles_action.connect(
             "activate",
@@ -210,7 +214,11 @@ class MainWindow:
         self._app.add_action(profiles_action)
 
     def _show_tray_context_menu(self) -> None:
-        """Show a popup context menu anchored to the main window (GTK4 approach)."""
+        """Show a popup context menu anchored to the main window (GTK4 approach).
+
+        Called on both left-click (Activate) and right-click (ContextMenu) because
+        GNOME AppIndicator implementations may not dispatch ContextMenu reliably.
+        """
         from snxui.core.types import ConnectionState
 
         # Dismiss any previously created popover that may still be open.
@@ -229,7 +237,10 @@ class MainWindow:
         menu = Gio.Menu()
         menu.append("Connect", "app.tray-connect")
         menu.append("Disconnect", "app.tray-disconnect")
+        menu.append_section(None, Gio.Menu())   # separator
+        menu.append("Show Window", "app.tray-show")
         menu.append("View Profiles", "app.tray-profiles")
+        menu.append_section(None, Gio.Menu())   # separator
         menu.append("Quit", "app.quit")
 
         self._tray_popover = Gtk.PopoverMenu.new_from_model(menu)
