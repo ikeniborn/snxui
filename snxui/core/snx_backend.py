@@ -61,7 +61,7 @@ _RE_CONNECTED = re.compile(
 # Authentication / connection failure
 _RE_AUTH_FAILED = re.compile(
     r"Authentication\s+failed|Invalid\s+password|Access\s+denied|"
-    r"Login\s+failed",
+    r"Login\s+failed|SNX:\s*Connection\s+aborted",
     re.IGNORECASE,
 )
 _RE_CONN_FAILED = re.compile(
@@ -142,6 +142,38 @@ _MONITOR_INTERVAL = 5
 
 
 # ---------------------------------------------------------------------------
+# PTY output logger
+# ---------------------------------------------------------------------------
+
+
+class _LogfileCapture:
+    """Pipe all SNX PTY read-output to our debug logger, line by line.
+
+    Assigned to ``child.logfile_read`` so every byte SNX writes to the
+    terminal is echoed to the ``snxui.core.snx_backend`` logger at DEBUG
+    level.  Carriage-returns are stripped; empty lines are skipped.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def write(self, data: str) -> int:
+        self._buf += data
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            cleaned = line.rstrip("\r")
+            if cleaned:
+                logger.debug("SNX> %s", cleaned)
+        return len(data)
+
+    def flush(self) -> None:
+        tail = self._buf.rstrip("\r")
+        if tail:
+            logger.debug("SNX> %s", tail)
+        self._buf = ""
+
+
+# ---------------------------------------------------------------------------
 # SNXBackend
 # ---------------------------------------------------------------------------
 
@@ -216,6 +248,7 @@ class SNXBackend:
             child = pexpect.spawn(
                 binary, args, encoding="utf-8", timeout=_CONNECT_TIMEOUT, echo=False,
             )
+            child.logfile_read = _LogfileCapture()
             return self._run_connect_session(
                 child, password, profile, status_callback, two_factor_callback,
             )
