@@ -1,12 +1,16 @@
 .PHONY: all test clean deb appimage install-deps install-policy
 
-PYTHON  := python3
+VENV    := .venv
+PYTHON  := $(VENV)/bin/python
 VERSION := $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo "0.1.0")
 
 all: test
 
-install-deps:
-	$(PYTHON) -m pip install -e ".[dev]"
+$(VENV):
+	python3 -m venv --system-site-packages $(VENV)
+
+install-deps: $(VENV)
+	$(VENV)/bin/pip install -e ".[dev]"
 	sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 	    python3-dbus python3-keyring python3-secretstorage python3-pexpect \
 	    python3-filelock debhelper devscripts
@@ -56,3 +60,4 @@ clean:
 	find . -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 	rm -rf build/ dist/ *.egg-info/ htmlcov/ .coverage AppDir/ snxui-*.AppImage
 	rm -f snxui_*.deb snxui_*.changes snxui_*.buildinfo
+	rm -rf $(VENV)
