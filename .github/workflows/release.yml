@@ -79,9 +79,13 @@ jobs:
       - name: Inject version into pyproject.toml
         run: |
           VERSION="${{ needs.read-version.outputs.version }}"
-          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          # Replace "dynamic = ["version"]" in [project] with a static version field.
+          sed -i "s/^dynamic = \[\"version\"\]/version = \"${VERSION}\"/" pyproject.toml
+          # Remove the now-unused file-based version entry from [tool.setuptools.dynamic].
+          sed -i '/^version = {file = "VERSION"}/d' pyproject.toml
           grep -q "^version = \"${VERSION}\"" pyproject.toml || {
             echo "ERROR: version injection failed in pyproject.toml"
+            cat pyproject.toml
             exit 1
           }
 

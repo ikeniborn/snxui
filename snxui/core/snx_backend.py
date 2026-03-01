@@ -363,9 +363,13 @@ class SNXBackend:
     def _extract_snx_error(output: str) -> str:
         """Return the most relevant error line from raw SNX output.
 
-        Scans output lines from the end, skipping banners and empty lines,
+        Returns empty string when the output is a help/usage page (SNX exited
+        because of invalid arguments — the base error message is sufficient).
+        Otherwise scans lines from the end, skipping banners and empty lines,
         and returns the first non-trivial line (up to 120 chars).
         """
+        if re.search(r"usage\s*:\s*snx", output, re.IGNORECASE):
+            return ""
         for line in reversed(output.splitlines()):
             line = line.strip()
             if line and not _RE_SNX_BANNER_SKIP.match(line):
