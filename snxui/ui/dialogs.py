@@ -574,7 +574,7 @@ class ProfileDialog:
             username="" if cert_mode else username,
             domain=None if cert_mode else domain_text,
             ssl_port=int(rows["port"].get_value()),
-            ca_list=rows["ca"].get_text().strip() or "/etc/ssl/certs",
+            ca_list=rows["ca"].get_text().strip(),
             certificate=cert_text if cert_mode else None,
             save_password=False if cert_mode else rows["save_pwd"].get_active(),
             two_factor_method=two_factor_method,

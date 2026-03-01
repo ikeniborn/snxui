@@ -146,10 +146,10 @@ class ProfilesPage:
         edit_btn.connect("clicked", lambda _b, p=profile: self._on_edit(p))
         row.add_suffix(edit_btn)
 
-        # Delete button.
+        # Delete button — not flat so the destructive-action style is visible
+        # on both light and dark backgrounds.
         del_btn = Gtk.Button.new_from_icon_name("user-trash-symbolic")
         del_btn.set_valign(Gtk.Align.CENTER)
-        del_btn.add_css_class("flat")
         del_btn.add_css_class("destructive-action")
         del_btn.set_tooltip_text("Delete profile")
         del_btn.connect("clicked", lambda _b, p=profile: self._on_delete(p))
