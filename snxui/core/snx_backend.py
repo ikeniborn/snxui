@@ -808,6 +808,8 @@ class SNXBackend:
         Returns:
             List of argument strings (without the binary name).
         """
+        from .types import TunnelType  # avoid circular import at module level
+
         args: list[str] = ["-s", profile.server]
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
@@ -827,6 +829,14 @@ class SNXBackend:
             args.append("-n")
         if profile.cipher:
             args += ["-Z", profile.cipher]
+        # Tunnel type: pass -m ipsec for IPSec/ESP data channel.
+        # SSL is the SNX default; no flag needed.
+        if profile.tunnel_type == TunnelType.IPSEC:
+            args += ["-m", "ipsec"]
+            if profile.esp_settings:
+                args += ["--esp", profile.esp_settings]
+            if profile.ike_settings:
+                args += ["--ike", profile.ike_settings]
         return args
 
     @staticmethod

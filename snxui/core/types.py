@@ -33,6 +33,13 @@ class TwoFactorMethod(Enum):
     RADIUS = "radius"
 
 
+class TunnelType(Enum):
+    """VPN data-channel type passed to SNX via ``-m``."""
+
+    SSL = "ssl"    # SSL/TLS data channel (SNX default)
+    IPSEC = "ipsec"  # IPSec/ESP data channel
+
+
 # Type alias — здесь, чтобы ui и core могли импортировать без circular import
 TwoFactorCallback = Callable[[str], Optional[str]]
 # str — prompt_text от SNX; Optional[str] — код для ввода или None (отмена)
@@ -72,6 +79,9 @@ class Profile:
     cipher: Optional[str] = None
     two_factor_method: TwoFactorMethod = TwoFactorMethod.NONE
     save_totp_secret: bool = False
+    tunnel_type: TunnelType = TunnelType.SSL
+    esp_settings: Optional[str] = None  # e.g. "aes256-sha256" — IPSec mode only
+    ike_settings: Optional[str] = None  # e.g. "aes256-sha256-modp2048" — IPSec mode only
 
 
 @dataclass

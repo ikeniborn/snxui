@@ -25,12 +25,12 @@ from typing import Any, Callable, Optional
 
 from filelock import FileLock, Timeout
 
-from .types import Profile, TwoFactorMethod
+from .types import Profile, TunnelType, TwoFactorMethod
 
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 3
+_FILE_FORMAT_VERSION = 4
 
 
 def _xdg_config_home() -> Path:
@@ -66,6 +66,9 @@ def _profile_to_dict(profile: Profile) -> dict:
         "cipher": profile.cipher,
         "two_factor_method": profile.two_factor_method.value,
         "save_totp_secret": profile.save_totp_secret,
+        "tunnel_type": profile.tunnel_type.value,
+        "esp_settings": profile.esp_settings,
+        "ike_settings": profile.ike_settings,
     }
 
 
@@ -101,6 +104,13 @@ def _profile_from_dict(data: dict) -> Profile:
         logger.warning("Unknown 2FA method %r — defaulting to NONE.", raw_2fa)
         two_factor_method = TwoFactorMethod.NONE
 
+    raw_tunnel = data.get("tunnel_type", "ssl")
+    try:
+        tunnel_type = TunnelType(raw_tunnel)
+    except ValueError:
+        logger.warning("Unknown tunnel type %r — defaulting to SSL.", raw_tunnel)
+        tunnel_type = TunnelType.SSL
+
     return Profile(
         id=raw_id,
         name=data.get("name", ""),
@@ -115,6 +125,9 @@ def _profile_from_dict(data: dict) -> Profile:
         cipher=data.get("cipher"),
         two_factor_method=two_factor_method,
         save_totp_secret=bool(data.get("save_totp_secret", False)),
+        tunnel_type=tunnel_type,
+        esp_settings=data.get("esp_settings") or None,
+        ike_settings=data.get("ike_settings") or None,
     )
 
 
@@ -225,6 +238,12 @@ class ProfileManager:
             for profile_data in (data.get("profiles") or {}).values():
                 profile_data.setdefault("domain", None)
             data["version"] = 3
+        if version < 4:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("tunnel_type", "ssl")
+                profile_data.setdefault("esp_settings", None)
+                profile_data.setdefault("ike_settings", None)
+            data["version"] = 4
         return data
 
     def _with_file_lock(self, fn: Callable[[], Any]) -> Any:

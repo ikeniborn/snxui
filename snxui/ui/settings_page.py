@@ -77,6 +77,7 @@ class SettingsPage:
     def _build_widget(self) -> None:
         self._page = Adw.PreferencesPage()
         self._page.add(self._build_general_group())
+        self._page.add(self._build_connection_group())
         self._page.add(self._build_snx_group())
 
     def _build_general_group(self) -> "Adw.PreferencesGroup":
@@ -110,6 +111,20 @@ class SettingsPage:
         self._scheme_row.connect("notify::selected", self._on_scheme_changed)
         general_group.add(self._scheme_row)
         return general_group
+
+    def _build_connection_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the Connection preferences group."""
+        conn_group = Adw.PreferencesGroup(title="Connection")
+
+        self._ask_mfa_row = Adw.SwitchRow(
+            title="Ask Server for MFA Prompts",
+            subtitle="Show MFA dialog on every connection, even if 2FA is not configured in profile",
+        )
+        self._ask_mfa_row.set_active(self._settings.get("ask_server_mfa", False))
+        self._ask_mfa_row.connect("notify::active", self._on_ask_mfa_toggled)
+        conn_group.add(self._ask_mfa_row)
+
+        return conn_group
 
     def _build_snx_group(self) -> "Adw.PreferencesGroup":
         """Build and return the SNX diagnostics preferences group."""
@@ -231,6 +246,10 @@ class SettingsPage:
         self._settings["minimize_to_tray"] = row.get_active()
         self._save_settings()
 
+    def _on_ask_mfa_toggled(self, row: "Adw.SwitchRow", _param: object) -> None:
+        self._settings["ask_server_mfa"] = row.get_active()
+        self._save_settings()
+
     def _on_scheme_changed(self, row: "Adw.ComboRow", _param: object) -> None:
         idx = row.get_selected()
         scheme_name = _ADW_COLOR_SCHEMES[idx] if idx < len(_ADW_COLOR_SCHEMES) else None
@@ -249,3 +268,8 @@ class SettingsPage:
     def minimize_to_tray(self) -> bool:
         """Return whether 'minimize to tray on close' is enabled."""
         return self._tray_row.get_active()
+
+    @property
+    def ask_server_mfa(self) -> bool:
+        """Return whether 'ask server for MFA prompts' is enabled."""
+        return self._ask_mfa_row.get_active()

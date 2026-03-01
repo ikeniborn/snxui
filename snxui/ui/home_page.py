@@ -524,12 +524,27 @@ class HomePage:
         else:
             logger.warning("No profile selected for connection.")
 
+    @staticmethod
+    def _load_ask_server_mfa() -> bool:
+        """Read the 'ask_server_mfa' setting from settings.json without importing SettingsPage."""
+        import json
+        import os
+        from pathlib import Path
+
+        xdg = os.environ.get("XDG_CONFIG_HOME", "")
+        base = Path(xdg) if xdg else Path.home() / ".config"
+        try:
+            with open(base / "snxui" / "settings.json", "r", encoding="utf-8") as fh:
+                return bool(json.load(fh).get("ask_server_mfa", False))
+        except Exception:
+            return False
+
     def _build_two_factor_callback(
         self, profile: "Profile"
     ) -> "Optional[TwoFactorCallback]":
         """Return appropriate 2FA callback based on profile's method."""
         from snxui.core.types import TwoFactorMethod
-        if profile.two_factor_method == TwoFactorMethod.NONE:
+        if profile.two_factor_method == TwoFactorMethod.NONE and not self._load_ask_server_mfa():
             return None
         if profile.two_factor_method in (TwoFactorMethod.TOTP, TwoFactorMethod.HOTP):
             secret: Optional[str] = None

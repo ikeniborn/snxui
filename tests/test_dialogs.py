@@ -210,9 +210,12 @@ class TestProfileDialog:
         save_row = MagicMock()
 
         # EntryRow returns the mock row objects in sequence.
+        # Order: name, server, user, domain, ca, cert, esp, ike
         domain_row = MagicMock()
         domain_row.get_text.return_value = ""
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
+        esp_row = MagicMock()
+        ike_row = MagicMock()
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 
@@ -306,7 +309,12 @@ class TestProfileDialog:
 
         domain_row = MagicMock()
         domain_row.get_text.return_value = ""
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
+        esp_row = MagicMock()
+        ike_row = MagicMock()
+        esp_row.get_text.return_value = ""
+        ike_row.get_text.return_value = ""
+        # EntryRow order: name, server, user, domain, ca, cert, esp, ike
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         # SwitchRow is called twice: save_password and save_totp_secret.
         local_adw.SwitchRow.side_effect = [save_row, save_totp_row]
@@ -367,7 +375,12 @@ class TestProfileDialog:
 
         domain_row = MagicMock()
         domain_row.get_text.return_value = ""
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row]
+        esp_row = MagicMock()
+        ike_row = MagicMock()
+        esp_row.get_text.return_value = ""
+        ike_row.get_text.return_value = ""
+        # EntryRow order: name, server, user, domain, ca, cert, esp, ike
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 
