@@ -555,12 +555,21 @@ class HomePage:
     def _build_two_factor_callback(
         self, profile: "Profile"
     ) -> "Optional[TwoFactorCallback]":
-        """Return appropriate 2FA callback based on profile's method."""
+        """Return appropriate 2FA callback based on profile's method.
+
+        For ``portal_auth=True`` profiles: this callback is passed to both the
+        portal HTTPS stage (PortalAuth.authenticate) and the SNX PTY stage
+        (SNXBackend._handle_post_password).  However, if the portal step 2
+        already collected an OTP, ``SNXBackend.connect()`` wraps this callback
+        with a one-shot that automatically returns the cached OTP for the first
+        PTY prompt — the user is therefore only asked once, not twice.
+        """
         from snxui.core.types import TwoFactorMethod
         if (
             profile.two_factor_method == TwoFactorMethod.NONE
             and not self._load_ask_server_mfa()
             and not profile.combined_auth
+            and not profile.portal_auth
         ):
             return None
         if profile.two_factor_method in (TwoFactorMethod.TOTP, TwoFactorMethod.HOTP):

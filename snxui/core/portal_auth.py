@@ -104,6 +104,7 @@ class PortalAuthResult:
     error_message: Optional[str] = None
     diagnostic: str = ""
     credentials_failed: bool = False  # True when server rejects username/password
+    otp_used: Optional[str] = None   # OTP value submitted in step 2 (cached to avoid re-prompt in SNX PTY)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +269,7 @@ class PortalAuth:
                     error_message="Two-factor authentication cancelled.",
                 )
             logger.info("Portal auth: submitting RADIUS OTP (step 2).")
-            return self._post_credentials(
+            step2_result = self._post_credentials(
                 username=username,
                 password=otp,                          # RADIUS OTP — RSA-encrypted same as password
                 realm=realm,
@@ -278,6 +279,11 @@ class PortalAuth:
                 form_url=result.otp_form_url,          # Use MCForm action URL if detected
                 otp_form_fields=result.otp_form_fields, # Hidden fields from MCForm
             )
+            # Store the OTP that was just submitted so the SNX PTY stage can
+            # automatically reuse it (avoiding a second interactive prompt).
+            if step2_result.success:
+                step2_result.otp_used = otp
+            return step2_result
 
         return result
 

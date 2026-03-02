@@ -254,10 +254,26 @@ class SNXBackend:
         self._invoke_callback(status_callback, snapshot)
 
         if profile.portal_auth:
-            ok = self._run_portal_auth(profile, password, status_callback, two_factor_callback)
+            ok, cached_otp = self._run_portal_auth(profile, password, status_callback, two_factor_callback)
             if ok is not None:
                 return ok
-            # ok=None → portal auth succeeded and wrote snxrc → continue to SNX
+            # ok=None → portal auth succeeded and wrote snxrc → continue to SNX.
+            # If the portal collected an OTP, wrap two_factor_callback with a one-shot
+            # that returns the cached value so the SNX PTY stage does not prompt again.
+            if cached_otp is not None:
+                _orig_cb = two_factor_callback
+                _otp_once: list[Optional[str]] = [cached_otp]
+
+                def _one_shot_callback(prompt_text: str) -> Optional[str]:
+                    if _otp_once:
+                        code = _otp_once.pop(0)
+                        logger.debug(
+                            "SNX PTY 2FA: returning cached portal OTP (no dialog shown)."
+                        )
+                        return code
+                    return _orig_cb(prompt_text) if _orig_cb is not None else None
+
+                two_factor_callback = _one_shot_callback
 
         args = self._build_args(profile)
         logger.info("Launching SNX: %s %s", binary, " ".join(args))
@@ -268,11 +284,10 @@ class SNXBackend:
                 binary, args, encoding="utf-8", timeout=_CONNECT_TIMEOUT, echo=False,
             )
             child.logfile_read = _LogfileCapture()
-            # Portal auth mode: SNX reconnects using ~/.snxrc session, no PTY interaction.
-            if profile.portal_auth:
-                return self._run_portal_snx_session(
-                    child, profile, status_callback
-                )
+            # Both portal-auth and regular profiles use the same SNX interaction
+            # sequence: await password prompt, send password, handle 2FA if asked.
+            # Portal auth already validated credentials via HTTPS; SNX still performs
+            # its own auth handshake (password + OTP if the gateway requests it).
             return self._run_connect_session(
                 child, password, profile, status_callback, two_factor_callback,
             )
@@ -870,76 +885,38 @@ class SNXBackend:
     # Portal auth helpers
     # ------------------------------------------------------------------
 
-    def _run_portal_snx_session(
-        self,
-        child: "pexpect.spawn",
-        profile: Profile,
-        callback: Optional[Callable[[ConnectionStatus], None]],
-    ) -> bool:
-        """Wait for SNX to connect after portal auth wrote ~/.snxrc.
-
-        In portal auth mode SNX is invoked with ``-r`` (reconnect) and reads
-        the session from ``~/.snxrc``.  There is no interactive password
-        prompt — SNX either connects or fails immediately.
-
-        Returns:
-            ``True`` on successful connection, ``False`` otherwise.
-        """
-        idx = child.expect(
-            [
-                _RE_CONNECTED,    # 0 — connected successfully
-                _RE_AUTH_FAILED,  # 1 — auth/session error
-                _RE_ALREADY,      # 2 — already connected
-                _RE_CONN_FAILED,  # 3 — connection-level failure
-                pexpect.EOF,      # 4
-                pexpect.TIMEOUT,  # 5
-            ],
-            timeout=_CONNECT_TIMEOUT,
-        )
-        full_output = (child.before or "") + (
-            child.after if isinstance(child.after, str) else ""
-        )
-
-        if idx == 0:
-            return self._finish_connected(child, profile, callback, full_output)
-        if idx == 2:
-            return self._handle_already_connected(child, profile, callback)
-        # idx 1,3,4,5 → failure
-        error_map = {
-            1: "Portal session rejected — session may have expired.",
-            3: "Connection failed — check server address and network.",
-            4: "SNX exited unexpectedly after portal auth.",
-            5: "SNX timed out waiting for connection (portal auth mode).",
-        }
-        error_msg = error_map.get(idx, "Unknown SNX error after portal auth.")
-        logger.error("Portal SNX session failed (idx=%d): %s. Output: %r", idx, error_msg, full_output)
-        with self._lock:
-            snapshot = self._update_status(
-                ConnectionState.ERROR, profile=profile, error_message=error_msg,
-            )
-        child.close()
-        self._invoke_callback(callback, snapshot)
-        return False
-
     def _run_portal_auth(
         self,
         profile: Profile,
         password: str,
         status_callback: Optional[Callable[[ConnectionStatus], None]],
         two_factor_callback: Optional[TwoFactorCallback],
-    ) -> Optional[bool]:
+    ) -> tuple[Optional[bool], Optional[str]]:
         """Authenticate against the Check Point portal via HTTPS.
 
-        This method is called before spawning the SNX PTY when
-        ``profile.portal_auth`` is True.  It authenticates directly
-        against the portal's ``/Login/Login`` endpoint and writes the
-        obtained session info to ``~/.snxrc`` so SNX can use it via
-        the reconnect path.
+        Called before spawning the SNX PTY when ``profile.portal_auth`` is
+        True.  Performs the multi-step portal login (password → RADIUS OTP /
+        MCForm) against ``/Login/Login`` and ``/Login/MultiChallenge``.
+
+        After this method returns ``(None, ...)`` the SNX binary is launched in
+        the normal auth mode (no ``-r``).  SNX performs its own handshake with
+        the gateway and may prompt for password (and OTP, if the gateway requires
+        a second factor for the native binary path as well).
+
+        ``write_snxrc`` is called on success for informational purposes and in
+        case the caller ever adds an explicit ``-r`` fallback in future.  It
+        does **not** affect the current connect path.
 
         Returns:
-            ``None``  — portal auth succeeded; caller should proceed with SNX.
-            ``False`` — portal auth failed; caller should abort.
-            (``True`` is never returned; full connect happens via SNX.)
+            Tuple ``(status, cached_otp)`` where:
+
+            * ``status=None, cached_otp=...`` — portal auth succeeded; caller
+              proceeds to SNX PTY.  ``cached_otp`` is the OTP string if one was
+              collected during portal step 2, or ``None`` if no OTP was needed.
+              The caller should wrap ``two_factor_callback`` with a one-shot that
+              returns ``cached_otp`` to suppress the second interactive prompt.
+            * ``status=False, cached_otp=None`` — portal auth failed; abort.
+            (``True`` is never returned; the full connect happens via SNX.)
         """
         from .portal_auth import PortalAuth
 
@@ -955,7 +932,12 @@ class SNXBackend:
             logger.info("Portal auth succeeded. Writing session to ~/.snxrc.")
             pa.write_snxrc(result)
             self._portal_credentials_failed = False
-            return None  # Proceed to SNX PTY
+            if result.otp_used:
+                logger.debug(
+                    "Portal auth: OTP was collected in step 2; "
+                    "caching for SNX PTY to avoid second prompt."
+                )
+            return None, result.otp_used  # Proceed to SNX PTY
 
         logger.error("Portal auth failed: %s | diagnostic: %s",
                      result.error_message, result.diagnostic[:500])
@@ -967,7 +949,7 @@ class SNXBackend:
                 error_message=result.error_message or "Portal authentication failed.",
             )
         self._invoke_callback(status_callback, snapshot)
-        return False
+        return False, None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -1018,13 +1000,22 @@ class SNXBackend:
         """
         args: list[str] = ["-s", profile.server]
 
-        if profile.portal_auth:
-            # Portal auth mode: ~/.snxrc was written by _run_portal_auth().
-            # Invoke SNX in reconnect mode so it picks up the stored session.
-            args.append("-r")
-            if profile.ssl_port != 443:
-                args += ["-p", str(profile.ssl_port)]
-            return args
+        # Portal reconnect mode (opt-in via profile.portal_reconnect_mode):
+        # After a successful portal auth, ``write_snxrc`` stores the session in
+        # ``~/.snxrc`` as ``auth_id="..."``.  When ``portal_reconnect_mode`` is
+        # True we pass ``-r`` so SNX reads ``~/.snxrc`` and skips its own auth
+        # handshake entirely (no password prompt, no OTP prompt in PTY stage).
+        #
+        # IMPORTANT: This only works if the gateway's CP build uses
+        # ``CPCVPN_OBSCURE_KEY`` (VPN tunnel key) as ``auth_id`` — some builds
+        # only set ``CPCVPN_SESSION_ID`` (portal cookie) which SNX does NOT
+        # accept as ``auth_id``.  Default is False (safe fallback: normal
+        # password + OTP PTY flow).
+        if profile.portal_auth and getattr(profile, "portal_reconnect_mode", False):
+            logger.info(
+                "_build_args: portal_reconnect_mode=True → using SNX -r (reconnect) flag."
+            )
+            return args + ["-r"]
 
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
