@@ -50,8 +50,13 @@ sudo install -m644 snxui/data/com.snxui.policy /usr/share/polkit-1/actions/
 ### Option 3: make install
 
 ```bash
-make install-deps
 make install
+```
+
+For development (adds pytest, mypy, black, debhelper):
+
+```bash
+make install-deps
 ```
 
 ## Usage

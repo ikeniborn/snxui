@@ -1,4 +1,4 @@
-.PHONY: all test clean deb appimage install-deps install-policy
+.PHONY: all test clean deb appimage install install-deps install-policy
 
 VENV    := .venv
 PYTHON  := $(VENV)/bin/python
@@ -9,12 +9,26 @@ all: test
 $(VENV):
 	python3 -m venv --system-site-packages $(VENV)
 
-install-deps: $(VENV)
+# Install application: system packages, Python package, binary and desktop integration
+install: $(VENV)
 	find $(VENV)/lib -maxdepth 4 -name '~nxui*' -type d -exec rm -rf {} + 2>/dev/null || true
-	$(VENV)/bin/pip install -e ".[dev]"
 	sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 	    python3-dbus python3-keyring python3-secretstorage python3-pexpect \
-	    python3-filelock debhelper devscripts
+	    python3-filelock
+	$(VENV)/bin/pip install -e .
+	sudo install -Dm755 $(VENV)/bin/snxui /usr/local/bin/snxui
+	sudo install -Dm644 snxui/data/com.snxui.policy \
+	    /usr/share/polkit-1/actions/com.snxui.policy
+	sudo install -Dm644 snxui/data/snxui.desktop \
+	    /usr/share/applications/snxui.desktop
+	sudo install -Dm644 snxui/data/icons/snxui.svg \
+	    /usr/share/icons/hicolor/scalable/apps/snxui.svg
+	sudo gtk-update-icon-cache /usr/share/icons/hicolor/ -t
+
+# Install dev/build dependencies on top of base install
+install-deps: install
+	$(VENV)/bin/pip install -e ".[dev]"
+	sudo apt-get install -y debhelper devscripts
 
 test:
 	$(PYTHON) -m pytest tests/ -v
@@ -35,17 +49,6 @@ deb:
 
 appimage: test
 	bash packaging/appimage/build-appimage.sh $(VERSION)
-
-install: $(VENV)
-	$(PYTHON) -m pip install -e .
-	sudo install -Dm755 $(VENV)/bin/snxui /usr/local/bin/snxui
-	sudo install -Dm644 snxui/data/com.snxui.policy \
-	    /usr/share/polkit-1/actions/com.snxui.policy
-	sudo install -Dm644 snxui/data/snxui.desktop \
-	    /usr/share/applications/snxui.desktop
-	sudo install -Dm644 snxui/data/icons/snxui.svg \
-	    /usr/share/icons/hicolor/scalable/apps/snxui.svg
-	sudo gtk-update-icon-cache /usr/share/icons/hicolor/ -t
 
 uninstall:
 	$(PYTHON) -m pip uninstall snxui -y
