@@ -30,7 +30,7 @@ from .types import Profile, TunnelType, TwoFactorMethod
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 4
+_FILE_FORMAT_VERSION = 6
 
 
 def _xdg_config_home() -> Path:
@@ -66,6 +66,8 @@ def _profile_to_dict(profile: Profile) -> dict:
         "cipher": profile.cipher,
         "two_factor_method": profile.two_factor_method.value,
         "save_totp_secret": profile.save_totp_secret,
+        "combined_auth": profile.combined_auth,
+        "portal_auth": profile.portal_auth,
         "tunnel_type": profile.tunnel_type.value,
         "esp_settings": profile.esp_settings,
         "ike_settings": profile.ike_settings,
@@ -125,6 +127,8 @@ def _profile_from_dict(data: dict) -> Profile:
         cipher=data.get("cipher"),
         two_factor_method=two_factor_method,
         save_totp_secret=bool(data.get("save_totp_secret", False)),
+        combined_auth=bool(data.get("combined_auth", False)),
+        portal_auth=bool(data.get("portal_auth", False)),
         tunnel_type=tunnel_type,
         esp_settings=data.get("esp_settings") or None,
         ike_settings=data.get("ike_settings") or None,
@@ -244,6 +248,14 @@ class ProfileManager:
                 profile_data.setdefault("esp_settings", None)
                 profile_data.setdefault("ike_settings", None)
             data["version"] = 4
+        if version < 5:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("combined_auth", False)
+            data["version"] = 5
+        if version < 6:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("portal_auth", False)
+            data["version"] = 6
         return data
 
     def _with_file_lock(self, fn: Callable[[], Any]) -> Any:

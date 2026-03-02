@@ -431,8 +431,8 @@ class ProfileDialog:
         cur_method_idx = 0
         if p and p.two_factor_method.value in _2FA_METHOD_VALUES:
             cur_method_idx = _2FA_METHOD_VALUES.index(p.two_factor_method.value)
-        method_row, totp_row, save_totp_row = self._build_2fa_group(
-            prefs_page, cur_method_idx
+        method_row, totp_row, save_totp_row, combined_auth_row, portal_auth_row = (
+            self._build_2fa_group(prefs_page, cur_method_idx)
         )
 
         rows = {
@@ -442,6 +442,8 @@ class ProfileDialog:
             "save_pwd": save_pwd_row,
             "tunnel": tunnel_row, "esp": esp_row, "ike": ike_row,
             "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
+            "combined_auth": combined_auth_row,
+            "portal_auth": portal_auth_row,
         }
         return scroll, rows
 
@@ -521,13 +523,27 @@ class ProfileDialog:
         save_totp_row.set_visible(cur_method_idx in (1, 2))
         tfa_group.add(save_totp_row)
 
+        combined_auth_row = Adw.SwitchRow(
+            title="Combined Authentication",
+            subtitle="Append OTP to password (for servers without interactive OTP prompt)",
+        )
+        combined_auth_row.set_active(p.combined_auth if p else False)
+        tfa_group.add(combined_auth_row)
+
+        portal_auth_row = Adw.SwitchRow(
+            title="Portal Authentication",
+            subtitle="Authenticate via HTTPS portal before SNX (for servers requiring browser/CShell flow)",
+        )
+        portal_auth_row.set_active(p.portal_auth if p else False)
+        tfa_group.add(portal_auth_row)
+
         def _on_method_changed(row: object, _param: object) -> None:
             is_totp = method_row.get_selected() in (1, 2)
             totp_row.set_visible(is_totp)
             save_totp_row.set_visible(is_totp)
         method_row.connect("notify::selected", _on_method_changed)
 
-        return method_row, totp_row, save_totp_row
+        return method_row, totp_row, save_totp_row, combined_auth_row, portal_auth_row
 
     def _build_action_area(
         self, dialog: object, is_new: bool, rows: "dict[str, object]"
@@ -652,6 +668,8 @@ class ProfileDialog:
             save_password=False if cert_mode else rows["save_pwd"].get_active(),
             two_factor_method=two_factor_method,
             save_totp_secret=rows["save_totp"].get_active(),
+            combined_auth=rows["combined_auth"].get_active(),
+            portal_auth=rows["portal_auth"].get_active(),
             tunnel_type=tunnel_type,
             esp_settings=rows["esp"].get_text().strip() or None if ipsec_mode else None,
             ike_settings=rows["ike"].get_text().strip() or None if ipsec_mode else None,

@@ -22,6 +22,7 @@ from snxui.core.snx_backend import (
     _RE_DISCONNECTED,
     _RE_OFFICE_IP,
     _RE_2FA_ANY,
+    _RE_GATEWAY_CONFIRM,
     _SNX_SEARCH_PATHS,
 )
 from snxui.core.types import ConnectionState, Profile
@@ -99,6 +100,15 @@ class TestRegexPatterns:
     ])
     def test_disconnected(self, text: str) -> None:
         assert _RE_DISCONNECTED.search(text)
+
+    @pytest.mark.parametrize("text", [
+        "Do you accept? [y]es/[N]o:",
+        "[y]es/[N]o:",
+        "Please confirm the connection to gateway: vpn.example.com",
+        "[Y]es/[N]o: ",
+    ])
+    def test_gateway_confirm(self, text: str) -> None:
+        assert _RE_GATEWAY_CONFIRM.search(text)
 
     def test_office_ip_extraction(self) -> None:
         text = "    Office Mode IP      : 10.200.0.5\n"
@@ -320,6 +330,62 @@ class TestConnect:
         assert any(
             call.args == ("y",) for call in child.sendline.call_args_list
         )
+
+    def test_combined_auth_appends_otp_to_password(
+        self, backend: SNXBackend
+    ) -> None:
+        """combined_auth=True: OTP must be appended to password before sendline."""
+        prof = Profile(
+            name="CA", server="vpn.example.com", username="bob", combined_auth=True
+        )
+        child = _make_child_mock([0, 0])  # password prompt, then connected
+        child.before = "Office Mode IP      : 10.9.8.7\n"
+        child.after = "SNX - Connected.\n"
+
+        otp_callback = MagicMock(return_value="123456")
+        with self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            result = backend.connect(prof, "secret", two_factor_callback=otp_callback)
+
+        assert result is True
+        # sendline must have been called with "secret123456"
+        sendline_calls = [c.args[0] for c in child.sendline.call_args_list]
+        assert "secret123456" in sendline_calls
+
+    def test_combined_auth_cancelled_returns_false(
+        self, backend: SNXBackend
+    ) -> None:
+        """combined_auth=True and user cancels OTP → connect returns False."""
+        prof = Profile(
+            name="CA", server="vpn.example.com", username="bob", combined_auth=True
+        )
+        child = _make_child_mock([0])  # password prompt only (otp cancelled before sendline)
+        child.before = ""
+        child.after = "Password:"
+
+        otp_callback = MagicMock(return_value=None)  # user cancelled
+        with self._patch_pexpect(child), self._patch_tunsnx(False):
+            result = backend.connect(prof, "secret", two_factor_callback=otp_callback)
+
+        assert result is False
+        assert backend._status.state == ConnectionState.ERROR
+
+    def test_combined_auth_no_callback_falls_back_to_plain_password(
+        self, backend: SNXBackend
+    ) -> None:
+        """combined_auth=True but no two_factor_callback: plain password sent."""
+        prof = Profile(
+            name="CA", server="vpn.example.com", username="bob", combined_auth=True
+        )
+        child = _make_child_mock([0, 0])  # password prompt, then connected
+        child.before = "Office Mode IP      : 10.0.0.1\n"
+        child.after = "SNX - Connected.\n"
+
+        with self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            result = backend.connect(prof, "secret", two_factor_callback=None)
+
+        assert result is True
+        sendline_calls = [c.args[0] for c in child.sendline.call_args_list]
+        assert "secret" in sendline_calls  # plain password sent without OTP
 
     def test_connect_raises_when_pexpect_missing(self, profile: Profile) -> None:
         b = SNXBackend()

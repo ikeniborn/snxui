@@ -34,9 +34,13 @@ class TwoFactorMethod(Enum):
 
 
 class TunnelType(Enum):
-    """VPN data-channel type passed to SNX via ``-m``."""
+    """VPN data-channel type stored in the profile.
 
-    SSL = "ssl"    # SSL/TLS data channel (SNX default)
+    SNX 800008409 negotiates the tunnel mode with the server automatically;
+    this value is stored for informational purposes and future SNX builds.
+    """
+
+    SSL = "ssl"      # SSL/TLS data channel (SNX default)
     IPSEC = "ipsec"  # IPSec/ESP data channel
 
 
@@ -79,6 +83,8 @@ class Profile:
     cipher: Optional[str] = None
     two_factor_method: TwoFactorMethod = TwoFactorMethod.NONE
     save_totp_secret: bool = False
+    combined_auth: bool = False  # Append OTP to password (servers without interactive OTP prompt)
+    portal_auth: bool = False    # Use HTTPS portal auth before SNX (servers requiring browser flow)
     tunnel_type: TunnelType = TunnelType.SSL
     esp_settings: Optional[str] = None  # e.g. "aes256-sha256" — IPSec mode only
     ike_settings: Optional[str] = None  # e.g. "aes256-sha256-modp2048" — IPSec mode only

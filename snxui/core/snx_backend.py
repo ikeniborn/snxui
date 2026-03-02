@@ -208,6 +208,9 @@ class SNXBackend:
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_stop = threading.Event()
         self._snx_binary: Optional[str] = None
+        # Set to True by _run_portal_auth() when the server rejects credentials.
+        # Read by home_page to decide whether to re-ask for password.
+        self._portal_credentials_failed: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -242,12 +245,19 @@ class SNXBackend:
                 "Install it with: pip install pexpect"
             )
 
+        self._portal_credentials_failed = False
         binary = self._find_snx_binary()
         with self._lock:
             snapshot = self._update_status(
                 ConnectionState.CONNECTING, profile=profile,
             )
         self._invoke_callback(status_callback, snapshot)
+
+        if profile.portal_auth:
+            ok = self._run_portal_auth(profile, password, status_callback, two_factor_callback)
+            if ok is not None:
+                return ok
+            # ok=None → portal auth succeeded and wrote snxrc → continue to SNX
 
         args = self._build_args(profile)
         logger.info("Launching SNX: %s %s", binary, " ".join(args))
@@ -258,6 +268,11 @@ class SNXBackend:
                 binary, args, encoding="utf-8", timeout=_CONNECT_TIMEOUT, echo=False,
             )
             child.logfile_read = _LogfileCapture()
+            # Portal auth mode: SNX reconnects using ~/.snxrc session, no PTY interaction.
+            if profile.portal_auth:
+                return self._run_portal_snx_session(
+                    child, profile, status_callback
+                )
             return self._run_connect_session(
                 child, password, profile, status_callback, two_factor_callback,
             )
@@ -307,8 +322,60 @@ class SNXBackend:
         if early is not None:
             return early
         logger.debug("Password prompt received, sending credentials.")
+        if profile.combined_auth:
+            return self._send_combined_auth(
+                child, password, profile, status_callback, two_factor_callback
+            )
         child.sendline(password)
         return self._handle_post_password(child, profile, status_callback, two_factor_callback)
+
+    def _send_combined_auth(
+        self,
+        child: "pexpect.spawn",
+        password: str,
+        profile: Profile,
+        status_callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback],
+    ) -> bool:
+        """Send password+OTP as a single combined credential.
+
+        Used when the server does not present an interactive OTP prompt but
+        expects the one-time code appended directly to the password field in
+        the authentication POST request.
+
+        If *two_factor_callback* is ``None``, sends the plain password as a
+        fallback (the user may have pre-appended the OTP themselves).
+
+        Returns:
+            ``True`` on successful connection, ``False`` otherwise.
+        """
+        if two_factor_callback is None:
+            logger.warning(
+                "combined_auth=True but no two_factor_callback provided — "
+                "sending plain password. Pre-append OTP manually if required."
+            )
+            child.sendline(password)
+            return self._handle_post_password(child, profile, status_callback, None)
+
+        prompt_text = (
+            child.after if isinstance(child.after, str) else ""
+        ) or "Enter your OTP code:"
+        otp = two_factor_callback(prompt_text)
+        if otp is None:
+            logger.info("Combined auth: user cancelled OTP input.")
+            with self._lock:
+                snapshot = self._update_status(
+                    ConnectionState.ERROR,
+                    profile=profile,
+                    error_message="Two-factor authentication cancelled.",
+                )
+            child.close()
+            self._invoke_callback(status_callback, snapshot)
+            return False
+
+        logger.debug("Combined auth: appending OTP to password.")
+        child.sendline(password + otp)
+        return self._handle_post_password(child, profile, status_callback, None)
 
     def _await_password_prompt(
         self,
@@ -336,9 +403,9 @@ class SNXBackend:
             ``False``).
         """
         # SNX may ask to confirm the gateway certificate before prompting for
-        # the password.  Allow up to 2 confirmation rounds (normally 1).
-        _CONFIRM_LIMIT = 2
-        for _confirm_round in range(_CONFIRM_LIMIT + 1):
+        # the password.  Allow up to _CONFIRM_LIMIT confirmation rounds (normally 1).
+        _CONFIRM_LIMIT = 3
+        for _confirm_round in range(_CONFIRM_LIMIT):
             idx = child.expect(
                 [
                     _RE_PASSWORD,           # 0
@@ -800,6 +867,109 @@ class SNXBackend:
             )
 
     # ------------------------------------------------------------------
+    # Portal auth helpers
+    # ------------------------------------------------------------------
+
+    def _run_portal_snx_session(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """Wait for SNX to connect after portal auth wrote ~/.snxrc.
+
+        In portal auth mode SNX is invoked with ``-r`` (reconnect) and reads
+        the session from ``~/.snxrc``.  There is no interactive password
+        prompt — SNX either connects or fails immediately.
+
+        Returns:
+            ``True`` on successful connection, ``False`` otherwise.
+        """
+        idx = child.expect(
+            [
+                _RE_CONNECTED,    # 0 — connected successfully
+                _RE_AUTH_FAILED,  # 1 — auth/session error
+                _RE_ALREADY,      # 2 — already connected
+                _RE_CONN_FAILED,  # 3 — connection-level failure
+                pexpect.EOF,      # 4
+                pexpect.TIMEOUT,  # 5
+            ],
+            timeout=_CONNECT_TIMEOUT,
+        )
+        full_output = (child.before or "") + (
+            child.after if isinstance(child.after, str) else ""
+        )
+
+        if idx == 0:
+            return self._finish_connected(child, profile, callback, full_output)
+        if idx == 2:
+            return self._handle_already_connected(child, profile, callback)
+        # idx 1,3,4,5 → failure
+        error_map = {
+            1: "Portal session rejected — session may have expired.",
+            3: "Connection failed — check server address and network.",
+            4: "SNX exited unexpectedly after portal auth.",
+            5: "SNX timed out waiting for connection (portal auth mode).",
+        }
+        error_msg = error_map.get(idx, "Unknown SNX error after portal auth.")
+        logger.error("Portal SNX session failed (idx=%d): %s. Output: %r", idx, error_msg, full_output)
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR, profile=profile, error_message=error_msg,
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return False
+
+    def _run_portal_auth(
+        self,
+        profile: Profile,
+        password: str,
+        status_callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback],
+    ) -> Optional[bool]:
+        """Authenticate against the Check Point portal via HTTPS.
+
+        This method is called before spawning the SNX PTY when
+        ``profile.portal_auth`` is True.  It authenticates directly
+        against the portal's ``/Login/Login`` endpoint and writes the
+        obtained session info to ``~/.snxrc`` so SNX can use it via
+        the reconnect path.
+
+        Returns:
+            ``None``  — portal auth succeeded; caller should proceed with SNX.
+            ``False`` — portal auth failed; caller should abort.
+            (``True`` is never returned; full connect happens via SNX.)
+        """
+        from .portal_auth import PortalAuth
+
+        login = (
+            f"{profile.domain}\\{profile.username}"
+            if profile.domain
+            else profile.username
+        )
+        pa = PortalAuth(server=profile.server, port=profile.ssl_port, verify_ssl=False)
+        result = pa.authenticate(login, password, otp_callback=two_factor_callback)
+
+        if result.success:
+            logger.info("Portal auth succeeded. Writing session to ~/.snxrc.")
+            pa.write_snxrc(result)
+            self._portal_credentials_failed = False
+            return None  # Proceed to SNX PTY
+
+        logger.error("Portal auth failed: %s | diagnostic: %s",
+                     result.error_message, result.diagnostic[:500])
+        self._portal_credentials_failed = result.credentials_failed
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message=result.error_message or "Portal authentication failed.",
+            )
+        self._invoke_callback(status_callback, snapshot)
+        return False
+
+    # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
@@ -847,6 +1017,15 @@ class SNXBackend:
             List of argument strings (without the binary name).
         """
         args: list[str] = ["-s", profile.server]
+
+        if profile.portal_auth:
+            # Portal auth mode: ~/.snxrc was written by _run_portal_auth().
+            # Invoke SNX in reconnect mode so it picks up the stored session.
+            args.append("-r")
+            if profile.ssl_port != 443:
+                args += ["-p", str(profile.ssl_port)]
+            return args
+
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
             args += ["-c", profile.certificate]

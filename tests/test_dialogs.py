@@ -281,6 +281,8 @@ class TestProfileDialog:
         method_row = MagicMock()
         totp_row = MagicMock()
         save_totp_row = MagicMock()
+        combined_auth_row = MagicMock()
+        portal_auth_row = MagicMock()
 
         # Initial (pre-close) widget values.
         name_row.get_text.return_value = "Work VPN"
@@ -293,6 +295,8 @@ class TestProfileDialog:
         method_row.get_selected.return_value = 0  # "none" — first 2FA method
         totp_row.get_text.return_value = ""
         save_totp_row.get_active.return_value = False
+        combined_auth_row.get_active.return_value = False
+        portal_auth_row.get_active.return_value = False
 
         dialog_mock = MagicMock()
         local_adw.Window.return_value = dialog_mock
@@ -316,8 +320,8 @@ class TestProfileDialog:
         # EntryRow order: name, server, user, domain, ca, cert, esp, ike
         local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
-        # SwitchRow is called twice: save_password and save_totp_secret.
-        local_adw.SwitchRow.side_effect = [save_row, save_totp_row]
+        # SwitchRow order: save_password, save_totp_secret, combined_auth, portal_auth.
+        local_adw.SwitchRow.side_effect = [save_row, save_totp_row, combined_auth_row, portal_auth_row]
         local_adw.ComboRow.return_value = method_row
         local_adw.PasswordEntryRow.return_value = totp_row
 
