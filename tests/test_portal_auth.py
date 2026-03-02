@@ -215,7 +215,6 @@ class TestPostCredentials:
             return pa._post_credentials(
                 username="alice",
                 password="secret",
-                otp="",
                 realm="ssl_vpn_RADIUS",
                 rsa_mod="",
                 rsa_exp="",
@@ -236,7 +235,7 @@ class TestPostCredentials:
         with patch.object(pa, "_find_cookie", side_effect=lambda n: "abc123" if n == "CPCVPN_SESSION_ID" else None):
             with patch.object(pa._opener, "open", return_value=_make_response("<html>", 200)):
                 result = pa._post_credentials(
-                    username="alice", password="secret", otp="",
+                    username="alice", password="secret",
                     realm="ssl_vpn_RADIUS", rsa_mod="", rsa_exp="", step=1,
                 )
         assert result.success is True
@@ -304,7 +303,7 @@ class TestPostCredentials:
         )
         with patch.object(pa._opener, "open", side_effect=exc):
             result = pa._post_credentials(
-                username="alice", password="secret", otp="",
+                username="alice", password="secret",
                 realm="", rsa_mod="", rsa_exp="", step=1,
             )
         assert result.success is False
@@ -313,7 +312,7 @@ class TestPostCredentials:
         pa = self._make_portal()
         with patch.object(pa._opener, "open", side_effect=OSError("timeout")):
             result = pa._post_credentials(
-                username="alice", password="secret", otp="",
+                username="alice", password="secret",
                 realm="", rsa_mod="", rsa_exp="", step=1,
             )
         assert result.success is False
@@ -339,7 +338,7 @@ class TestPostCredentials:
 
         with patch.object(pa._opener, "open", side_effect=fake_open):
             pa._post_credentials(
-                username="alice", password="s3cr3t", otp="",
+                username="alice", password="s3cr3t",
                 realm="R", rsa_mod=mod, rsa_exp=exp, step=1,
             )
 
@@ -369,7 +368,7 @@ class TestPostCredentials:
 
         with patch.object(pa._opener, "open", side_effect=fake_open):
             pa._post_credentials(
-                username="alice", password="s3cr3t", otp="",
+                username="alice", password="s3cr3t",
                 realm="R", rsa_mod="", rsa_exp="", step=1,
             )
 
@@ -389,7 +388,7 @@ class TestPostCredentials:
 
         with patch.object(pa._opener, "open", side_effect=fake_open):
             pa._post_credentials(
-                username="alice", password="654321", otp="",
+                username="alice", password="654321",
                 realm="R", rsa_mod="", rsa_exp="", step=2,
             )
 
@@ -417,7 +416,7 @@ class TestPostCredentials:
 
         with patch.object(pa._opener, "open", side_effect=fake_open):
             pa._post_credentials(
-                username="alice", password="654321", otp="",
+                username="alice", password="654321",
                 realm="R", rsa_mod=mod, rsa_exp=exp, step=2,
             )
 
@@ -437,7 +436,7 @@ class TestPostCredentials:
         pa = self._make_portal()
         with patch.object(pa._opener, "open", return_value=_make_response(login_page_no_error)):
             result = pa._post_credentials(
-                username="alice", password="secret", otp="",
+                username="alice", password="secret",
                 realm="ssl_vpn_RADIUS", rsa_mod="", rsa_exp="", step=1,
             )
         assert result.otp_required is True
@@ -454,7 +453,7 @@ class TestPostCredentials:
         pa = self._make_portal()
         with patch.object(pa._opener, "open", return_value=_make_response(login_page_with_error)):
             result = pa._post_credentials(
-                username="alice", password="wrong", otp="",
+                username="alice", password="wrong",
                 realm="ssl_vpn_RADIUS", rsa_mod="", rsa_exp="", step=1,
             )
         assert result.credentials_failed is True
@@ -485,6 +484,7 @@ class TestAuthenticate:
         assert result.session_id == "SID1"
 
     def test_step1_otp_required_calls_callback_and_submits_step2(self):
+        """otp_prompt field (not diagnostic) is used as the dialog prompt."""
         pa = self._make_portal()
         step2_result = PortalAuthResult(success=True, session_id="SID2")
         otp_cb = MagicMock(return_value="123456")
@@ -493,19 +493,46 @@ class TestAuthenticate:
             with patch.object(
                 pa, "_post_credentials",
                 side_effect=[
-                    PortalAuthResult(success=False, otp_required=True, diagnostic="Enter OTP:"),
+                    PortalAuthResult(
+                        success=False,
+                        otp_required=True,
+                        otp_prompt="Enter your RADIUS token:",  # clean prompt
+                        diagnostic="<html>... raw HTML ...",    # NOT shown to user
+                    ),
                     step2_result,
                 ],
             ) as mock_post:
                 result = pa.authenticate("alice", "pass", otp_callback=otp_cb)
 
-        otp_cb.assert_called_once_with("Enter OTP:")
+        # Callback must be called with the clean otp_prompt, NOT the raw HTML diagnostic
+        otp_cb.assert_called_once_with("Enter your RADIUS token:")
         assert result.success is True
-        # Step 2 call: password= otp, rsa_mod=""
+        # Step 2 call: password=otp, rsa_mod="" (no RSA key in mock page_info)
         step2_call = mock_post.call_args_list[1]
         assert step2_call.kwargs["password"] == "123456"
         assert step2_call.kwargs["step"] == 2
         assert step2_call.kwargs["rsa_mod"] == ""
+
+    def test_otp_callback_uses_realm_header_when_no_otp_prompt(self):
+        """When otp_prompt is not set, use otp_header from page_info as fallback."""
+        pa = self._make_portal()
+        otp_cb = MagicMock(return_value="999888")
+
+        with patch.object(pa, "_fetch_login_page", return_value={
+            "realm": "R",
+            "otp_header": "Additional auth required. Enter token:",
+        }):
+            with patch.object(
+                pa, "_post_credentials",
+                side_effect=[
+                    PortalAuthResult(success=False, otp_required=True),  # no otp_prompt
+                    PortalAuthResult(success=True, session_id="SID"),
+                ],
+            ):
+                pa.authenticate("alice", "pass", otp_callback=otp_cb)
+
+        # Should use otp_header from page_info when otp_prompt is None
+        otp_cb.assert_called_once_with("Additional auth required. Enter token:")
 
     def test_otp_required_no_callback_returns_error(self):
         pa = self._make_portal()
@@ -722,3 +749,333 @@ class TestExtractError:
     def test_no_error_returns_empty(self):
         text = PortalAuth._extract_error("<html><body><p>Hello</p></body></html>")
         assert text == ""
+
+
+# ---------------------------------------------------------------------------
+# PortalAuth._extract_mcform_hidden_fields
+# ---------------------------------------------------------------------------
+
+
+class TestExtractMcformHiddenFields:
+    """Tests for extracting MCForm hidden fields from /Login/MultiChallenge page."""
+
+    _MCFORM_HTML = textwrap.dedent("""\
+        <html><body>
+        <form id="MCForm" name="MCForm" action="/Login/MultiChallenge" method="post">
+            <input type="password" id="passwordDisplayed" name="passwordDisplayed" required>
+            <input type="hidden" id="password" name="password">
+            <input type="hidden" id="username" name="username" value="i.y.tischenko">
+            <input type="hidden" name="cancelFlag" id="cancelFlag">
+            <input type="hidden" name="HeightData" id="HeightData">
+            <input type="hidden" name="params" value="YkxhdW5jaFNXUz0wfHxzbnhfcmVsb2dpbj0w">
+        </form>
+        </body></html>
+    """)
+
+    def test_extracts_username_params_cancelFlag(self):
+        fields = PortalAuth._extract_mcform_hidden_fields(self._MCFORM_HTML)
+        assert fields["username"] == "i.y.tischenko"
+        assert fields["params"] == "YkxhdW5jaFNXUz0wfHxzbnhfcmVsb2dpbj0w"
+        assert fields["cancelFlag"] == ""
+        assert fields["HeightData"] == ""
+
+    def test_excludes_password_field(self):
+        """'password' must be excluded — we fill it from RSA-encrypted OTP."""
+        fields = PortalAuth._extract_mcform_hidden_fields(self._MCFORM_HTML)
+        assert "password" not in fields
+
+    def test_ignores_fields_outside_mcform(self):
+        """Hidden fields in other forms must not be included."""
+        html = textwrap.dedent("""\
+            <form id="loginForm">
+                <input type="hidden" name="shouldBeIgnored" value="yes">
+            </form>
+            <form id="MCForm" action="/Login/MultiChallenge">
+                <input type="hidden" name="params" value="abc123">
+                <input type="hidden" name="password">
+            </form>
+        """)
+        fields = PortalAuth._extract_mcform_hidden_fields(html)
+        assert "shouldBeIgnored" not in fields
+        assert fields.get("params") == "abc123"
+
+    def test_no_mcform_returns_empty_dict(self):
+        html = '<form id="other"><input type="hidden" name="x" value="1"></form>'
+        fields = PortalAuth._extract_mcform_hidden_fields(html)
+        assert fields == {}
+
+    def test_excludes_verification_problem_div_fields(self):
+        """phoneNumbersSelection (inside VerificationProblemDiv) must be excluded.
+
+        The browser's inputDisable() disables all inputs in VerificationProblemDiv
+        on page-load, so they are not sent in normal OTP submission.
+        """
+        html = textwrap.dedent("""\
+            <form id="MCForm" action="/Login/MultiChallenge">
+                <div id="MCDiv">
+                    <input type="hidden" name="username" value="alice">
+                    <input type="hidden" name="params" value="ABC">
+                    <input type="hidden" name="cancelFlag">
+                    <input type="hidden" name="HeightData">
+                </div>
+                <div id="VerificationProblemDiv" style="display: none">
+                    <input type="hidden" name="phoneNumbersSelection" value="0">
+                </div>
+            </form>
+        """)
+        fields = PortalAuth._extract_mcform_hidden_fields(html)
+        assert fields.get("username") == "alice"
+        assert fields.get("params") == "ABC"
+        assert "phoneNumbersSelection" not in fields, (
+            "phoneNumbersSelection must be excluded (browser disables it before OTP submit)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# MCForm step 2 POST form (integration with _post_credentials)
+# ---------------------------------------------------------------------------
+
+
+class TestMcFormStep2Post:
+    """Verify that step 2 to MCForm uses the correct field names."""
+
+    _MOD_HEX = "a" * 128
+    _EXP_HEX = "010001"
+
+    def _make_portal(self):
+        return PortalAuth(server="vpn.test", port=443)
+
+    def test_mcform_step2_uses_username_not_userName(self):
+        """Step 2 with form_url: field is 'username', NOT 'userName'."""
+        pa = self._make_portal()
+        captured_body: list[bytes] = []
+
+        def fake_open(req, timeout=None):
+            captured_body.append(req.data)
+            return _make_response("")
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._post_credentials(
+                username="alice", password="654321",
+                realm="R", rsa_mod="", rsa_exp="", step=2,
+                form_url="/Login/MultiChallenge",
+                otp_form_fields={
+                    "username": "alice",
+                    "cancelFlag": "",
+                    "HeightData": "",
+                    "params": "abc123",
+                },
+            )
+
+        # keep_blank_values=True: parse_qsl by default drops "key=" empty pairs
+        params = dict(urllib.parse.parse_qsl(captured_body[0].decode(), keep_blank_values=True))
+        assert params.get("username") == "alice", "MCForm uses 'username'"
+        assert "userName" not in params, "'userName' must not appear in MCForm POST"
+        assert "cancelFlag" in params, "cancelFlag must be present"
+        assert params.get("params") == "abc123", "params must be echoed back"
+        # Step 1 fields must be absent in MCForm POST
+        assert "selectedRealm" not in params
+        assert "loginType" not in params
+        assert "Login" not in params
+        # pin="" IS sent in MCForm (browser submits empty pin for RADIUS OTP)
+        assert "pin" in params
+
+    def test_mcform_step2_rsa_encrypts_otp(self):
+        """Step 2 with form_url + RSA: OTP is RSA-encrypted in 'password'."""
+        pa = self._make_portal()
+        captured_body: list[bytes] = []
+
+        def fake_open(req, timeout=None):
+            captured_body.append(req.data)
+            return _make_response("")
+
+        mod = self._MOD_HEX
+        exp = self._EXP_HEX
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._post_credentials(
+                username="alice", password="654321",
+                realm="R", rsa_mod=mod, rsa_exp=exp, step=2,
+                form_url="/Login/MultiChallenge",
+                otp_form_fields={
+                    "username": "alice",
+                    "cancelFlag": "",
+                    "HeightData": "",
+                    "params": "YkxhdW5jaFNXUz0wfHxzbnhfcmVsb2dpbj0w",
+                },
+            )
+
+        params = dict(urllib.parse.parse_qsl(captured_body[0].decode()))
+        encrypted = params.get("password", "")
+        assert len(encrypted) == len(mod), "RSA ciphertext length must match key size"
+        assert all(c in "0123456789abcdef" for c in encrypted)
+        assert "login-input" not in params, "login-input must not appear in MCForm POST"
+
+    def test_mcform_step2_fallback_username_when_fields_empty(self):
+        """When otp_form_fields has no 'username', fall back to provided username."""
+        pa = self._make_portal()
+        captured_body: list[bytes] = []
+
+        def fake_open(req, timeout=None):
+            captured_body.append(req.data)
+            return _make_response("")
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._post_credentials(
+                username="bob", password="otp",
+                realm="R", rsa_mod="", rsa_exp="", step=2,
+                form_url="/Login/MultiChallenge",
+                otp_form_fields={},  # empty — no username field extracted
+            )
+
+        params = dict(urllib.parse.parse_qsl(captured_body[0].decode(), keep_blank_values=True))
+        assert params.get("username") == "bob"
+        assert "cancelFlag" in params
+        assert "HeightData" in params
+
+    def test_mcform_step2_includes_pin_empty(self):
+        """Step 2 MCForm POST must include pin='' (browser sends it, it's not disabled)."""
+        pa = self._make_portal()
+        captured_body: list[bytes] = []
+
+        def fake_open(req, timeout=None):
+            captured_body.append(req.data)
+            return _make_response("")
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._post_credentials(
+                username="alice", password="654321",
+                realm="R", rsa_mod="", rsa_exp="", step=2,
+                form_url="/Login/MultiChallenge",
+                otp_form_fields={"username": "alice", "cancelFlag": "", "params": "X"},
+            )
+
+        params = dict(urllib.parse.parse_qsl(captured_body[0].decode(), keep_blank_values=True))
+        assert "pin" in params, "pin must be present (browser sends empty pin for RADIUS OTP)"
+        assert params["pin"] == ""
+
+    def test_otp_form_fields_passed_to_step2_in_authenticate(self):
+        """authenticate() passes otp_form_fields from step 1 result to step 2 call."""
+        pa = self._make_portal()
+        mcform_fields = {"username": "u", "cancelFlag": "", "params": "XYZ"}
+        step2_result = PortalAuthResult(success=True, session_id="SID2")
+        otp_cb = MagicMock(return_value="123456")
+
+        with patch.object(pa, "_fetch_login_page", return_value={"realm": "R"}):
+            with patch.object(
+                pa, "_post_credentials",
+                side_effect=[
+                    PortalAuthResult(
+                        success=False,
+                        otp_required=True,
+                        otp_prompt="Enter OTP:",
+                        otp_form_url="/Login/MultiChallenge",
+                        otp_form_fields=mcform_fields,
+                    ),
+                    step2_result,
+                ],
+            ) as mock_post:
+                pa.authenticate("u", "pass", otp_callback=otp_cb)
+
+        step2_call = mock_post.call_args_list[1]
+        assert step2_call.kwargs["form_url"] == "/Login/MultiChallenge"
+        assert step2_call.kwargs["otp_form_fields"] == mcform_fields
+
+    def test_authenticate_stores_otp_in_result_when_radius_used(self):
+        """When step 2 RADIUS OTP is submitted successfully, result.otp_used holds the OTP."""
+        pa = self._make_portal()
+        otp_value = "654321"
+        otp_cb = MagicMock(return_value=otp_value)
+        step2_result = PortalAuthResult(success=True, session_id="SID_RADIUS")
+
+        with patch.object(pa, "_fetch_login_page", return_value={"realm": "R"}):
+            with patch.object(
+                pa, "_post_credentials",
+                side_effect=[
+                    PortalAuthResult(success=False, otp_required=True, otp_prompt="Enter OTP:"),
+                    step2_result,
+                ],
+            ):
+                result = pa.authenticate("alice", "pass", otp_callback=otp_cb)
+
+        assert result.success is True
+        assert result.otp_used == otp_value, "otp_used must hold the OTP submitted in step 2"
+
+    def test_authenticate_otp_used_is_none_when_no_radius(self):
+        """When step 1 succeeds directly (no OTP), result.otp_used is None."""
+        pa = self._make_portal()
+        with patch.object(pa, "_fetch_login_page", return_value={"realm": "R"}):
+            with patch.object(
+                pa, "_post_credentials",
+                return_value=PortalAuthResult(success=True, session_id="SID1"),
+            ):
+                result = pa.authenticate("alice", "pass")
+
+        assert result.success is True
+        assert result.otp_used is None
+
+    def test_authenticate_otp_used_is_none_when_step2_fails(self):
+        """When step 2 OTP is submitted but fails, result.otp_used is None (not cached)."""
+        pa = self._make_portal()
+        otp_cb = MagicMock(return_value="wrong_otp")
+        step2_fail = PortalAuthResult(success=False, error_message="OTP rejected")
+
+        with patch.object(pa, "_fetch_login_page", return_value={"realm": "R"}):
+            with patch.object(
+                pa, "_post_credentials",
+                side_effect=[
+                    PortalAuthResult(success=False, otp_required=True, otp_prompt="OTP:"),
+                    step2_fail,
+                ],
+            ):
+                result = pa.authenticate("alice", "pass", otp_callback=otp_cb)
+
+        assert result.success is False
+        assert result.otp_used is None, "otp_used must not be set when step 2 fails"
+
+
+# ---------------------------------------------------------------------------
+# Truncated debug logging
+# ---------------------------------------------------------------------------
+
+
+class TestTruncatedLogging:
+    """Verify that debug log messages do not contain very large content."""
+
+    def _make_portal(self):
+        return PortalAuth(server="vpn.test", port=443, verify_ssl=False)
+
+    def test_no_large_debug_logs_from_get_response(self, caplog):
+        """GET /Login/Login debug log must not exceed 600 chars per message."""
+        import logging
+        large_html = ("X" * 30000) + '<script>var realmsArrJSON = \'[{"name":"R","isHidden":false}]\';</script>'
+
+        pa = self._make_portal()
+        with caplog.at_level(logging.DEBUG, logger="snxui.core.portal_auth"):
+            with patch.object(pa._opener, "open", return_value=_make_response(large_html)):
+                pa._fetch_login_page()
+
+        # No single DEBUG message should contain the full HTML body (30000+ chars)
+        for record in caplog.records:
+            if record.levelno == logging.DEBUG:
+                msg = record.getMessage()
+                assert len(msg) < 2000, (
+                    f"Debug log message too large ({len(msg)} chars), likely logging full body: "
+                    f"{msg[:200]!r}..."
+                )
+
+    def test_no_large_debug_logs_from_js_fetch(self, caplog):
+        """_fetch_rsa_from_js() must not log full JS file content."""
+        import logging
+        large_js = "var x = 1;\n" * 5000  # ~55KB of JS
+
+        pa = self._make_portal()
+        with caplog.at_level(logging.DEBUG, logger="snxui.core.portal_auth"):
+            with patch.object(pa._opener, "open", return_value=_make_response(large_js)):
+                pa._fetch_rsa_from_js({})
+
+        for record in caplog.records:
+            if record.levelno == logging.DEBUG:
+                msg = record.getMessage()
+                assert len(msg) < 2000, (
+                    f"JS fetch debug log too large ({len(msg)} chars): {msg[:200]!r}..."
+                )

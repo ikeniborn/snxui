@@ -1013,3 +1013,160 @@ class TestConnect2FA:
         assert _RE_2FA_ANY is not None
         assert _RE_2FA_ANY.search("OTP:")
         assert not _RE_2FA_ANY.search("Password:")
+
+
+# ---------------------------------------------------------------------------
+# Portal auth OTP caching + reconnect flag
+# ---------------------------------------------------------------------------
+
+
+class TestPortalAuthOtpCaching:
+    """Tests for OTP caching in _run_portal_auth() and connect() one-shot wrap."""
+
+    def _patch_pexpect(self, child_mock):
+        return patch("snxui.core.snx_backend.pexpect.spawn", return_value=child_mock)
+
+    def _patch_monitor(self):
+        return patch.object(SNXBackend, "_start_monitor")
+
+    def _patch_tunsnx(self, exists: bool = False):
+        return patch.object(SNXBackend, "_tunsnx_exists", return_value=exists)
+
+    def test_run_portal_auth_returns_cached_otp_on_success(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """_run_portal_auth() returns (None, otp_value) when portal step 2 collected an OTP."""
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        otp_value = "123456"
+        success_result = PortalAuthResult(
+            success=True, session_id="SID", otp_used=otp_value
+        )
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = success_result
+            instance.write_snxrc.return_value = True
+
+            status, cached_otp = backend._run_portal_auth(
+                profile, "password", None, None
+            )
+
+        assert status is None, "None means proceed to SNX PTY"
+        assert cached_otp == otp_value
+
+    def test_run_portal_auth_returns_none_otp_when_no_step2(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """_run_portal_auth() returns (None, None) when portal succeeded without OTP."""
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        success_result = PortalAuthResult(success=True, session_id="SID", otp_used=None)
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = success_result
+            instance.write_snxrc.return_value = True
+
+            status, cached_otp = backend._run_portal_auth(
+                profile, "password", None, None
+            )
+
+        assert status is None
+        assert cached_otp is None
+
+    def test_run_portal_auth_returns_false_on_failure(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """_run_portal_auth() returns (False, None) when portal auth fails."""
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        fail_result = PortalAuthResult(
+            success=False, error_message="Wrong credentials", credentials_failed=True
+        )
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = fail_result
+
+            status, cached_otp = backend._run_portal_auth(
+                profile, "wrong_pass", None, None
+            )
+
+        assert status is False
+        assert cached_otp is None
+
+    def test_connect_portal_auth_caches_otp_no_dialog_for_pty(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When portal step 2 collected OTP, SNX PTY must NOT call two_factor_callback again."""
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        otp_value = "999888"
+        original_cb = MagicMock(return_value=otp_value)
+
+        success_result = PortalAuthResult(
+            success=True, session_id="SID", otp_used=otp_value
+        )
+
+        # SNX PTY: password prompt (idx=0), then 2FA prompt (idx=1), then connected (idx=0)
+        child = _make_child_mock([0, 1, 0])
+        child.before = ""
+        child.after = "SNX - Connected."
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = success_result
+            instance.write_snxrc.return_value = True
+
+            with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+                result = backend.connect(
+                    profile, "password",
+                    two_factor_callback=original_cb,
+                )
+
+        assert result is True
+        # The original callback must NOT have been called for the PTY OTP prompt
+        # (the one-shot wrapper consumed the cached value instead).
+        original_cb.assert_not_called()
+        # SNX PTY must have received the cached OTP via sendline
+        child.sendline.assert_any_call(otp_value)
+
+
+class TestBuildArgsReconnectMode:
+    """Tests for portal_reconnect_mode -r flag in _build_args()."""
+
+    def test_portal_reconnect_mode_true_uses_r_flag(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When portal_auth=True and portal_reconnect_mode=True, args must include -r."""
+        profile.portal_auth = True
+        profile.portal_reconnect_mode = True
+        args = backend._build_args(profile)
+        assert "-r" in args
+        # -u must be absent when using -r (SNX reconnect mode uses ~/.snxrc, not -u)
+        assert "-u" not in args
+
+    def test_portal_reconnect_mode_false_uses_normal_args(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When portal_reconnect_mode=False (default), normal -u flag is used."""
+        profile.portal_auth = True
+        profile.portal_reconnect_mode = False
+        args = backend._build_args(profile)
+        assert "-r" not in args
+        assert "-u" in args
+
+    def test_portal_reconnect_mode_only_applies_when_portal_auth_true(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """portal_reconnect_mode has no effect when portal_auth=False."""
+        profile.portal_auth = False
+        profile.portal_reconnect_mode = True
+        args = backend._build_args(profile)
+        assert "-r" not in args
+        assert "-u" in args
