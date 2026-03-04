@@ -201,7 +201,7 @@ class PortalAuth:
         self,
         server: str,
         port: int = 443,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
     ) -> None:
         self._server = server
         self._port = port

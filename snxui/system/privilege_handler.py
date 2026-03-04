@@ -70,7 +70,7 @@ class PrivilegeHandler:
         snx_path = self._find_snx()
 
         cmd = [pkexec_path, str(snx_path)] + snx_args
-        logger.info("Запуск SNX через pkexec: %s", " ".join(cmd))
+        logger.debug("Запуск SNX через pkexec: %s", " ".join(cmd))
 
         return subprocess.Popen(
             cmd,

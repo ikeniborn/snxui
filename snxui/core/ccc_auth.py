@@ -218,7 +218,7 @@ class CCCAuth:
         verify_ssl: Skip certificate verification when False.
     """
 
-    def __init__(self, server: str, port: int = 443, verify_ssl: bool = False) -> None:
+    def __init__(self, server: str, port: int = 443, verify_ssl: bool = True) -> None:
         self._server = server
         self._port = port
         self._portal_cookies: dict[str, str] = {}

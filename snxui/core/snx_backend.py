@@ -1134,7 +1134,7 @@ class SNXBinaryBackend(VPNBackend):
             if profile.domain
             else profile.username
         )
-        pa = PortalAuth(server=profile.server, port=profile.ssl_port, verify_ssl=False)
+        pa = PortalAuth(server=profile.server, port=profile.ssl_port, verify_ssl=not profile.ignore_server_cert)
         result = pa.authenticate(login, password, otp_callback=two_factor_callback)
 
         if result.success:
@@ -1145,7 +1145,7 @@ class SNXBinaryBackend(VPNBackend):
             # session token (active_key) that /SNX/ReLogin actually accepts.
             # We try CCC immediately after portal auth — using the same credentials
             # and the OTP that was just collected (cached_otp avoids a second prompt).
-            ccc = CCCAuth(server=profile.server, port=profile.ssl_port, verify_ssl=False)
+            ccc = CCCAuth(server=profile.server, port=profile.ssl_port, verify_ssl=not profile.ignore_server_cert)
             # Use the realm extracted during portal GET /Login/Login.
             # Required by CCC UserPass as :selectedRealm.
             realm = result.realm
