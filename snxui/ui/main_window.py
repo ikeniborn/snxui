@@ -260,7 +260,8 @@ class MainWindow:
         self._tray_popover.set_parent(self._win)
         self._tray_popover.set_has_arrow(False)
         self._win.present()
-        self._tray_popover.popup()
+        from gi.repository import GLib
+        GLib.idle_add(self._tray_popover.popup)
 
     # ------------------------------------------------------------------
     # Public API

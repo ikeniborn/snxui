@@ -109,8 +109,14 @@ class HomePage:
         self._speed_label = Gtk.Label(label="")
         self._speed_label.add_css_class("caption")
         self._speed_label.set_opacity(0.7)
-        self._speed_label.set_margin_bottom(4)
+        self._speed_label.set_margin_bottom(2)
         self._speed_label.set_visible(False)
+
+        self._totals_label = Gtk.Label(label="")
+        self._totals_label.add_css_class("caption")
+        self._totals_label.set_opacity(0.5)
+        self._totals_label.set_margin_bottom(4)
+        self._totals_label.set_visible(False)
 
         self._spinner = Gtk.Spinner()
         self._spinner.set_size_request(32, 32)
@@ -133,6 +139,7 @@ class HomePage:
         status_box.append(self._status_label)
         status_box.append(self._info_label)
         status_box.append(self._speed_label)
+        status_box.append(self._totals_label)
         status_box.append(self._copy_error_btn)
         status_box.append(self._spinner)
         status_group.add(status_box)
@@ -266,6 +273,8 @@ class HomePage:
         self._status_icon.set_from_icon_name("network-transmit-receive-symbolic")
         self._status_label.set_label("Connecting...")
         self._info_label.set_visible(False)
+        self._speed_label.set_visible(False)
+        self._totals_label.set_visible(False)
         self._copy_error_btn.set_visible(False)
         self._connect_btn.set_sensitive(False)
         self._spinner.set_spinning(True)
@@ -288,6 +297,7 @@ class HomePage:
             self._traffic.stop()
             self._traffic = None
         self._speed_label.set_visible(False)
+        self._totals_label.set_visible(False)
 
         self._status_icon.set_from_icon_name("network-error-symbolic")
         err = status.error_message or "Unknown error"
@@ -352,10 +362,14 @@ class HomePage:
         rx_total: int,
         tx_total: int,
     ) -> None:
-        """Обновить лейбл скорости и tooltip трея. Вызывается в main thread."""
-        from snxui.system.traffic_monitor import format_speed
+        """Обновить лейблы скорости и трафика. Вызывается в main thread."""
+        from snxui.system.traffic_monitor import format_speed, format_bytes
         self._speed_label.set_label(f"↓ {format_speed(rx_bps)}  ↑ {format_speed(tx_bps)}")
         self._speed_label.set_visible(True)
+        self._totals_label.set_label(
+            f"Получено: {format_bytes(rx_total)}  ·  Отправлено: {format_bytes(tx_total)}"
+        )
+        self._totals_label.set_visible(True)
         if self._tray is not None:
             self._tray.set_connected(
                 True,
@@ -372,6 +386,7 @@ class HomePage:
             self._traffic.stop()
             self._traffic = None
         self._speed_label.set_visible(False)
+        self._totals_label.set_visible(False)
 
         self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_label.set_label("Disconnected")

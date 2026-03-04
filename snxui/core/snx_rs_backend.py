@@ -462,6 +462,13 @@ class SNXRsBackend(VPNBackend):
         if ip_match:
             ip_address = ip_match.group(1)
 
+        # Extract interface name if present (e.g. "Interface: tunsnx0").
+        # Use original output (not lowercased) to preserve case of iface name.
+        interface: Optional[str] = None
+        iface_match = re.search(r'interface\s*[:\=]\s*(\S+)', output, re.IGNORECASE)
+        if iface_match:
+            interface = iface_match.group(1).strip()
+
         # Determine state from keywords — order matters: check "disconnected"
         # before "connected" to avoid false positives in "not connected" messages.
         if "disconnected" in output_lower or "not connected" in output_lower:
@@ -470,6 +477,7 @@ class SNXRsBackend(VPNBackend):
             return ConnectionStatus(
                 state=ConnectionState.CONNECTED,
                 ip_address=ip_address,
+                interface=interface,
             )
         if "connecting" in output_lower:
             return ConnectionStatus(state=ConnectionState.CONNECTING)

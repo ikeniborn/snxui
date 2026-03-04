@@ -13,8 +13,8 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Интерфейсы VPN-туннеля (SNX binary / snx-rs)
-_IFACE_CANDIDATES = ("tunsnx", "tunsnx0")
+# Интерфейсы VPN-туннеля (SNX binary / snx-rs / generic tun)
+_IFACE_CANDIDATES = ("tunsnx", "tunsnx0", "tun0", "tun1", "vpn0")
 
 # Интервал опроса в миллисекундах
 _POLL_INTERVAL_MS = 3000
@@ -248,10 +248,34 @@ class TrafficMonitor:
     def _resolve_iface(iface: str) -> Optional[str]:
         """Найти первый доступный интерфейс в /proc/net/dev.
 
-        Проверяет сначала ``iface``, затем список кандидатов.
+        Проверяет сначала ``iface``, затем список кандидатов, затем сканирует
+        все tun*/vpn*/ppp* интерфейсы как запасной вариант.
         """
         candidates = [iface] + [c for c in _IFACE_CANDIDATES if c != iface]
         for candidate in candidates:
             if _read_iface_bytes(candidate) is not None:
                 return candidate
+        # Fallback: scan /proc/net/dev for any VPN-like interface
+        return TrafficMonitor._scan_vpn_iface()
+
+    @staticmethod
+    def _scan_vpn_iface() -> Optional[str]:
+        """Сканировать /proc/net/dev и вернуть первый tun/vpn/ppp интерфейс."""
+        try:
+            with open("/proc/net/dev", "r", encoding="ascii") as fh:
+                for line in fh:
+                    stripped = line.strip()
+                    if ":" not in stripped:
+                        continue
+                    name = stripped.split(":")[0].strip()
+                    if name and any(
+                        name.startswith(p) for p in ("tun", "vpn", "ppp", "snx")
+                    ):
+                        logger.debug(
+                            "TrafficMonitor: найден VPN-интерфейс %r при сканировании",
+                            name,
+                        )
+                        return name
+        except OSError:
+            pass
         return None
