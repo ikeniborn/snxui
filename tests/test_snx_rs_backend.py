@@ -140,6 +140,40 @@ class TestBuildConfig:
         assert "mfa-code" not in config
 
 
+class TestWriteConfig:
+    """_write_config must create the file with 0o600 permissions atomically."""
+
+    def test_creates_file_with_restricted_permissions(
+        self, backend: SNXRsBackend, profile: Profile, tmp_path: "Path"
+    ) -> None:
+        """Config file must be created owner-only (0o600), not world-readable."""
+        import os
+        import stat
+        from unittest.mock import patch as _patch
+
+        config_path = tmp_path / "snx-rs.conf"
+        with _patch("snxui.core.snx_rs_backend._CONFIG_PATH", config_path):
+            backend._write_config(profile, password="s3cr3t")
+
+        assert config_path.exists()
+        mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+
+    def test_password_not_in_config_after_cleanup_write(
+        self, backend: SNXRsBackend, profile: Profile, tmp_path: "Path"
+    ) -> None:
+        """Second call without password must overwrite and remove credentials."""
+        from unittest.mock import patch as _patch
+
+        config_path = tmp_path / "snx-rs.conf"
+        with _patch("snxui.core.snx_rs_backend._CONFIG_PATH", config_path):
+            backend._write_config(profile, password="s3cr3t")
+            assert "password" in config_path.read_text()
+            # Cleanup write (no password)
+            backend._write_config(profile)
+            assert "password" not in config_path.read_text()
+
+
 # ---------------------------------------------------------------------------
 # get_status
 # ---------------------------------------------------------------------------

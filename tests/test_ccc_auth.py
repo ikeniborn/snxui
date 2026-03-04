@@ -13,6 +13,7 @@ from snxui.core.ccc_auth import (
     _build_hello,
     _build_otp_response,
     _build_userpass,
+    _redact_ccc,
     _sexp_escape,
     _sexp_int,
     _sexp_str,
@@ -107,6 +108,25 @@ def _wrong_pw_resp() -> str:
 # ---------------------------------------------------------------------------
 # S-expression helpers
 # ---------------------------------------------------------------------------
+
+
+class TestRedactCcc:
+    """_redact_ccc must mask active_key values to prevent log-based credential theft."""
+
+    def test_redacts_active_key(self):
+        response = '(CCCserverResponse :ResponseData (:active_key ("abcdef1234567890")))'
+        redacted = _redact_ccc(response)
+        assert "abcdef1234567890" not in redacted
+        assert ":active_key" in redacted
+        assert "***" in redacted
+
+    def test_leaves_other_fields_intact(self):
+        response = '(CCCserverResponse :ResponseData (:return_code (0) :session_id ("abc")))'
+        assert _redact_ccc(response) == response
+
+    def test_no_active_key_unchanged(self):
+        text = "no sensitive data here"
+        assert _redact_ccc(text) == text
 
 
 class TestSexpEscape:

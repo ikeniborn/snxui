@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -262,9 +263,12 @@ class SNXRsBackend(VPNBackend):
         """
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         config_text = self._build_config(profile, password, mfa_code)
-        _CONFIG_PATH.write_text(config_text, encoding="utf-8")
-        # Restrict file to owner-only read/write (credentials may be present).
-        _CONFIG_PATH.chmod(0o600)
+        # Use os.open with mode 0o600 so the file is created with owner-only
+        # permissions from the start — avoids the TOCTOU window between
+        # write_text() and chmod() where the password could be world-readable.
+        fd = os.open(str(_CONFIG_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(config_text)
         logger.debug("Wrote snx-rs config to %s", _CONFIG_PATH)
 
     def _build_config(

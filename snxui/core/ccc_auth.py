@@ -49,6 +49,15 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Matches the active_key value in CCC S-expression responses so it can be
+# redacted from debug logs (active_key is a session credential).
+_RE_ACTIVE_KEY_LOG = re.compile(r'(:active_key\s*\(\s*")[^"]*(")', re.IGNORECASE)
+
+
+def _redact_ccc(text: str) -> str:
+    """Replace active_key value with *** to prevent credential leakage in logs."""
+    return _RE_ACTIVE_KEY_LOG.sub(r"\1***\2", text)
+
 # SNX native client User-Agent (required by /clients/ endpoint)
 _SNX_UA = "SNXClient"
 
@@ -393,7 +402,7 @@ class CCCAuth:
             return None
 
         logger.error("CCC: UserPass unexpected return_code=%d", auth_rc)
-        logger.debug("CCC: full response: %r", auth_resp[:500])
+        logger.debug("CCC: full response: %r", _redact_ccc(auth_resp[:500]))
         return None
 
     # ------------------------------------------------------------------
@@ -441,7 +450,7 @@ class CCCAuth:
         try:
             with self._opener.open(req, timeout=15) as resp:
                 raw = resp.read(8192).decode("utf-8", errors="replace")
-            logger.debug("CCC response (%d bytes): %r", len(raw), raw[:600])
+            logger.debug("CCC response (%d bytes): %r", len(raw), _redact_ccc(raw[:600]))
             return raw
         except urllib.error.HTTPError as exc:
             try:
@@ -543,5 +552,5 @@ class CCCAuth:
             return None
 
         logger.error("CCC: ChallengeResponse unexpected return_code=%d", otp_rc)
-        logger.debug("CCC: full OTP response: %r", otp_resp[:400])
+        logger.debug("CCC: full OTP response: %r", _redact_ccc(otp_resp[:400]))
         return None
