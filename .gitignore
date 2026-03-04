@@ -23,6 +23,7 @@ htmlcov/
 .claude/workspace/
 .claude/sessions/
 .claude/code-review/
+.claude/tools/
 memory/
 
 # AppImage build artifacts
