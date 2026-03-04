@@ -58,6 +58,7 @@ def _redact_ccc(text: str) -> str:
     """Replace active_key value with *** to prevent credential leakage in logs."""
     return _RE_ACTIVE_KEY_LOG.sub(r"\1***\2", text)
 
+
 # SNX native client User-Agent (required by /clients/ endpoint)
 _SNX_UA = "SNXClient"
 
