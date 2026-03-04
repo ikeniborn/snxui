@@ -475,12 +475,12 @@ class TestMigrationV1ToV2:
         tmp_pm.create(profile)
 
         saved = json.loads(tmp_pm._path.read_text(encoding="utf-8"))
-        assert saved["version"] == 6
+        assert saved["version"] == 7
 
     def test_v2_file_not_re_migrated(self, tmp_pm: ProfileManager) -> None:
         """A v2 file must load and migrate to current version."""
         from snxui.core.profile_manager import _FILE_FORMAT_VERSION
-        assert _FILE_FORMAT_VERSION == 6
+        assert _FILE_FORMAT_VERSION == 7
 
         profile = Profile(
             name="Current",

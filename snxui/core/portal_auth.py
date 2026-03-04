@@ -36,17 +36,29 @@ If no RSA key is found, plain Password= field is used as fallback.
 References (strings from /usr/bin/snx build 800008409)
 -------------------------------------------------------
   POST /Login/Login HTTP/1.1
+  User-Agent: SNXClient               ← CRITICAL: identifies as native client
+  Content-Type: application/x-www-form-urlencoded
   POST /SNX/ReLogin HTTP/1.1
+  User-Agent: SNXClient
   loginType=Standard&userName=
-  Code=
+  Code=                               ← OTP/challenge code field (empty on step 1)
   &HeightData=&Login=Sign+In
-  CPCVPN_SESSION_ID
-  auth_id="
+  CPCVPN_SESSION_ID                   ← cookie name parsed from auth response
+  auth_id="                           ← ~/.snxrc field written after auth
   cookie_timeout="
+
+Session type and /SNX/ReLogin
+------------------------------
+The portal creates a *browser* session when auth is done via /Login/Login.
+After auth, the SNX binary fetches auxiliary endpoints (/reauthentication.html,
+/SNX/extender, /extender.html) with User-Agent: SNXClient and the portal
+session cookie — the server may exchange that browser session for a CCC-compatible
+token at those endpoints.  See ``_fetch_snx_resources()`` for details.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -55,7 +67,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Callable, Optional
@@ -68,10 +80,22 @@ _SESSION_COOKIE = "CPCVPN_SESSION_ID"
 # SNX reconnect config file written after portal auth
 _SNXRC_PATH = Path.home() / ".snxrc"
 
-# Browser User-Agent (portal JS checks this)
-_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-)
+# Portal login requires a browser User-Agent — the server validates UA against
+# a whitelist (IE, Edge, Firefox, Chrome, Safari) and returns an
+# "unsupported_browsers.png" page for any other value (tested with "SNXClient").
+#
+# Even though `strings /usr/bin/snx` shows:
+#   POST /Login/Login HTTP/1.1 + User-Agent: SNXClient
+# the SNX binary uses that combination only for specific server types OR those
+# strings apply to a different endpoint (/reauthentication.html, /SNX/extender).
+# For portal-based auth (this module) a browser UA is required for /Login/Login.
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+
+# SNX native client UA — used for probing /reauthentication.html, /SNX/extender
+# and other endpoints that the SNX binary accesses with its own User-Agent.
+# These endpoints may return a CCC-compatible session token when accessed with
+# the portal session cookie already set.
+_SNX_UA = "SNXClient"
 
 # Patterns for OTP challenge in server response
 _OTP_PATTERNS = re.compile(
@@ -105,6 +129,9 @@ class PortalAuthResult:
     diagnostic: str = ""
     credentials_failed: bool = False  # True when server rejects username/password
     otp_used: Optional[str] = None   # OTP value submitted in step 2 (cached to avoid re-prompt in SNX PTY)
+    snx_launch_token: Optional[str] = None  # Auth token from /SNX/SNX page (preferred over session_id for write_snxrc)
+    realm: str = ""                  # Realm name from GET /Login/Login (needed by CCC auth for selectedRealm)
+    portal_cookies: dict[str, str] = field(default_factory=dict)  # All cookies after auth (sent with CCC requests)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +272,7 @@ class PortalAuth:
         )
 
         if result.success:
+            result.realm = realm  # Store realm for CCC auth reuse
             return result
 
         # ── Step 2: RADIUS OTP ─────────────────────────────────────────
@@ -279,10 +307,11 @@ class PortalAuth:
                 form_url=result.otp_form_url,          # Use MCForm action URL if detected
                 otp_form_fields=result.otp_form_fields, # Hidden fields from MCForm
             )
-            # Store the OTP that was just submitted so the SNX PTY stage can
-            # automatically reuse it (avoiding a second interactive prompt).
+            # Store the OTP and realm so subsequent CCC auth can reuse them
+            # without prompting the user again.
             if step2_result.success:
                 step2_result.otp_used = otp
+                step2_result.realm = realm
             return step2_result
 
         return result
@@ -290,26 +319,39 @@ class PortalAuth:
     def write_snxrc(self, result: PortalAuthResult) -> bool:
         """Write session info to ``~/.snxrc`` for SNX reconnect mode (``-r``).
 
-        SNX binary uses ``auth_id`` to skip the OTP/2FA challenge (the server
-        recognises the portal session and skips the second factor).  The
-        correct value depends on the Check Point build:
+        Token priority for ``auth_id``:
 
-        * ``CPCVPN_OBSCURE_KEY`` — VPN tunnel key set by some CP builds after
-          a successful two-step portal auth.  SNX binary reads this and matches
-          it against its internal session state.  This is the preferred value.
-        * ``CPCVPN_SESSION_ID``  — web portal session cookie.  Some older CP
-          builds accept this instead; used as fallback when OBSCURE_KEY is absent.
+        1. ``snx_launch_token`` — CCC ``active_key`` obtained directly from
+           ``/clients/`` (highest quality; ``/SNX/ReLogin`` always accepts it).
+        2. ``obscure_key`` — ``CPCVPN_OBSCURE_KEY`` VPN tunnel key set by the
+           server after portal auth.  The SNX binary uses this for ``-r``
+           reconnect when the portal has authenticated the session.
+        3. ``session_id`` — ``CPCVPN_SESSION_ID`` browser session cookie
+           (last resort; many servers reject this at ``/SNX/ReLogin``).
         """
         if not result.success or not result.session_id:
             logger.warning("write_snxrc: no valid session.")
             return False
-        # Prefer CPCVPN_OBSCURE_KEY (VPN tunnel key); fall back to CPCVPN_SESSION_ID.
-        effective_auth_id = result.obscure_key or result.auth_id or result.session_id
-        logger.info(
-            "write_snxrc: auth_id source=%s value=%.12s…",
-            "CPCVPN_OBSCURE_KEY" if result.obscure_key else "CPCVPN_SESSION_ID",
-            effective_auth_id,
-        )
+
+        if result.snx_launch_token:
+            effective_auth_id = result.snx_launch_token
+            logger.info(
+                "write_snxrc: auth_id source=SNX_LAUNCH_TOKEN value=%.12s…",
+                effective_auth_id,
+            )
+        elif result.obscure_key:
+            effective_auth_id = result.obscure_key
+            logger.info(
+                "write_snxrc: auth_id source=CPCVPN_OBSCURE_KEY value=%.12s…",
+                effective_auth_id,
+            )
+        else:
+            effective_auth_id = result.session_id
+            logger.info(
+                "write_snxrc: auth_id source=CPCVPN_SESSION_ID value=%.12s… "
+                "(CPCVPN_OBSCURE_KEY absent — /SNX/ReLogin may reject browser session)",
+                effective_auth_id,
+            )
         lines = [
             f'gateway="{self._server}"',
             f'auth_id="{effective_auth_id}"',
@@ -335,6 +377,13 @@ class PortalAuth:
 
         Returns dict with keys: realm, rsa_modulus, rsa_exponent, hidden_fields.
         """
+        # ── GET login page ───────────────────────────────────────────────
+        # The portal /Login/Login requires a browser User-Agent.
+        # With User-Agent: SNXClient the server returns only a 3625-byte
+        # "unsupported browser" page (unsupported_browsers.png) and sets no
+        # session cookies — the subsequent POST would also fail.
+        # The SNX binary likely reaches the portal via a different mechanism
+        # (see /reauthentication.html, /SNX/extender in _fetch_snx_resources).
         url = self._url("/Login/Login")
         req = urllib.request.Request(url, method="GET")
         self._set_browser_headers(req, referer=None)
@@ -345,10 +394,14 @@ class PortalAuth:
             logger.warning("Portal auth: GET failed (%s), continuing.", exc)
             return {}
 
+        cookies_after_get = [c.name for c in self._cj]
         logger.debug(
-            "Portal GET: cookies=%s, body_len=%d, body_preview=%.500s",
-            [c.name for c in self._cj], len(html), html,
+            "Portal GET: cookies=%s, body_len=%d",
+            cookies_after_get, len(html),
         )
+        if not cookies_after_get:
+            # Log more body for diagnosis when server sets no initial cookies.
+            logger.debug("Portal GET: no cookies set. body[:1000]: %r", html[:1000])
 
         info = {}
 
@@ -476,7 +529,9 @@ class PortalAuth:
             js_url = self._url(js_path)
             try:
                 req = urllib.request.Request(js_url, method="GET")
-                self._set_browser_headers(req, referer=self._url("/Login/Login"))
+                self._set_browser_headers(
+                    req, referer=self._url("/Login/Login")
+                )
                 with self._opener.open(req, timeout=10) as resp:
                     js_text = resp.read(131072).decode("utf-8", errors="replace")
 
@@ -595,6 +650,11 @@ class PortalAuth:
             if not encrypted_pw:
                 form["login-input"] = password    # plaintext fallback (no RSA key)
             form["password"] = encrypted_pw       # RSA ciphertext
+            # Code= field: confirmed from SNX binary strings.
+            # SNX binary always includes Code= in its /Login/Login POST.
+            # For step 1 (password only) it is empty; the server may use it
+            # to identify this as a native-client request rather than browser.
+            form["Code"] = ""
             form["HeightData"] = ""
             form["Login"] = "Sign In"             # matches SNX binary: Login=Sign+In
 
@@ -631,7 +691,15 @@ class PortalAuth:
             f"Step{step} HTTP {status} | cookies: {cookies_now} | "
             f"body_len: {len(raw)} | body[:200]: {raw[:200]!r}"
         )
-        logger.info("Portal auth POST diagnostic:\n%s", diag)
+        logger.debug("Portal auth POST diagnostic:\n%s", diag)
+        # Log more body when we get no session cookie — helps diagnose server
+        # responses that contain OTP challenges in non-standard formats.
+        if not self._find_cookie(_SESSION_COOKIE):
+            logger.debug(
+                "Portal auth POST step %d: no session cookie yet. "
+                "body[200:1200]: %r",
+                step, raw[200:1200],
+            )
 
         # ── Check for session cookie ────────────────────────────────────
         session_id = self._find_cookie(_SESSION_COOKIE)
@@ -643,7 +711,52 @@ class PortalAuth:
                 "Portal auth: %s cookie obtained — authenticated! "
                 "CPCVPN_OBSCURE_KEY=%s",
                 _SESSION_COOKIE,
-                "present" if obscure_key else "absent",
+                (f"present (%.12s…, {len(obscure_key)} chars)" % obscure_key)
+                if obscure_key else "absent",
+            )
+            # ── Search for SNX-specific launch data in the portal page ───
+            # The portal page often contains JS/HTML that helps the browser
+            # launch SNX with the correct session token.  Log any relevant
+            # patterns to assist diagnosing reconnect (-r) failures.
+            _snx_pat = re.compile(
+                r'(?:auth_id|snxrc|snx_relogin|LaunchSNX|snxConnect|snx_token'
+                r'|GetSnxData|snx_data|snx_session|SnxSession)[^"\'<\n]{0,120}',
+                re.IGNORECASE,
+            )
+            snx_matches = _snx_pat.findall(raw)
+            if snx_matches:
+                logger.info(
+                    "Portal page SNX patterns (%d found): %s",
+                    len(snx_matches),
+                    snx_matches[:5],
+                )
+            else:
+                logger.debug(
+                    "Portal page: no SNX token patterns found in %d bytes of response. "
+                    "Body[200:600]: %r",
+                    len(raw),
+                    raw[200:600],
+                )
+            # Log all JS <script src=...> references — helps find CSHELL launch JS paths
+            js_src_refs = re.findall(
+                r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']',
+                raw, re.IGNORECASE,
+            )
+            if js_src_refs:
+                logger.info("Portal success page JS refs: %s", js_src_refs)
+            # ── Try to get a CCC-compatible launch token from /SNX/SNX ──
+            # The portal creates a *browser* session (CPCVPN_SESSION_ID).
+            # /SNX/ReLogin likely requires a *CCC* session token — different type.
+            # Fetching /SNX/SNX with our portal cookies may return the token
+            # that the portal would normally pass to the native SNX launcher.
+            snx_token = self._fetch_snx_resources()
+            # Capture all portal cookies so they can be forwarded to CCC requests.
+            # The server associates CCC /clients/ requests with the portal session
+            # via the CPCVPN_SESSION_ID and CPCVPN_OBSCURE_KEY cookies.
+            all_cookies = {c.name: c.value for c in self._cj if c.value}
+            logger.debug(
+                "Portal auth: capturing cookies for CCC forwarding: %s",
+                list(all_cookies.keys()),
             )
             return PortalAuthResult(
                 success=True,
@@ -651,6 +764,8 @@ class PortalAuth:
                 auth_id=auth_id,
                 cookie_timeout=timeout,
                 obscure_key=obscure_key,
+                snx_launch_token=snx_token,
+                portal_cookies=all_cookies,
                 diagnostic=diag,
             )
 
@@ -726,6 +841,24 @@ class PortalAuth:
                 )
             else:
                 logger.info("Portal auth: OTP challenge detected — no MCForm, will POST to /Login/Login.")
+            # Decode the base64 `params` hidden field to surface server flags.
+            # Check Point encodes session state like "bLaunchSWS=0||snx_relogin=0"
+            # which signals whether SNX native reconnect is supported for this session.
+            params_val = otp_fields.get("params", "")
+            if params_val:
+                try:
+                    decoded_params = base64.b64decode(params_val).decode("utf-8", errors="replace")
+                    logger.info("MCForm params decoded: %r", decoded_params)
+                    if "snx_relogin=0" in decoded_params:
+                        logger.warning(
+                            "MCForm params: snx_relogin=0 — server signals this browser "
+                            "session cannot be used for SNX native reconnect. "
+                            "CCC-based authentication is required for /SNX/ReLogin."
+                        )
+                    elif "snx_relogin=1" in decoded_params:
+                        logger.info("MCForm params: snx_relogin=1 — SNX reconnect may be supported.")
+                except Exception as exc:
+                    logger.debug("MCForm params base64 decode failed: %s", exc)
             return PortalAuthResult(
                 success=False,
                 otp_required=True,
@@ -752,6 +885,241 @@ class PortalAuth:
         )
 
     # ------------------------------------------------------------------
+    # SNX launch token fetch
+    # ------------------------------------------------------------------
+
+    def _fetch_snx_resources(self) -> Optional[str]:
+        """Fetch portal SNX launch resources to find a CCC-compatible auth token.
+
+        After successful portal auth (browser session via ``/Login/Login``) the
+        CPCVPN_SESSION_ID cookie is valid as a *browser* session.  The SNX binary
+        uses a set of auxiliary endpoints to convert or exchange this session for
+        a CCC-compatible token that ``/SNX/ReLogin`` accepts.
+
+        Confirmed from ``strings /usr/bin/snx``:
+
+        * ``GET /reauthentication.html HTTP/1.0``   User-Agent: SNXClient
+        * ``GET /extender.html HTTP/1.0``            User-Agent: SNXClient
+        * ``GET /SNX/extender HTTP/1.1``             User-Agent: SNXClient
+        * ``GET /SNX/SNX HTTP/1.1``                  (browser or SNX UA)
+
+        These endpoints are tried with *SNXClient* UA so the server recognises
+        this as a native client request and may set a CCC-specific cookie or
+        return a token in the response body.
+
+        Returns:
+            A CCC-compatible auth token string if found, ``None`` otherwise.
+        """
+        # Regex to detect hex auth tokens embedded in response bodies (≥16 chars)
+        _AUTH_PAT = re.compile(
+            r'(?:auth_id|CPCVPN_OBSCURE_KEY|ccc_session|snx_token)'
+            r'[=:"\s\']+([0-9a-fA-F]{16,})',
+            re.IGNORECASE,
+        )
+        _SNX_LAUNCH_PAT = re.compile(
+            r'(?:/SNX/|/clients/|snx_token|snxauth|LaunchSNX|GetSnxData'
+            r'|snxConnect|snx_relogin|LaunchApplication|snx://|reauthentication'
+            r'|CPCVPN_OBSCURE_KEY|active_key|auth_id|cshell[_\.]launch'
+            r'|startSNX|14696|reauthenticate|snx_session|SNX_SESSION)'
+            r'[^\n"\']{0,200}',
+            re.IGNORECASE,
+        )
+
+        def _probe(path: str, *, ua: str, http_ver: str = "1.1") -> Optional[str]:
+            """GET *path* with *ua*, log response, return token if found."""
+            url = self._url(path)
+            req = urllib.request.Request(url, method="GET")
+            # Override UA directly — these probes may use SNXClient UA
+            req.add_header("User-Agent", ua)
+            req.add_header("Accept", "text/html,application/xhtml+xml,*/*")
+            try:
+                with self._opener.open(req, timeout=5) as resp:
+                    status = resp.status
+                    raw = resp.read(16384).decode("utf-8", errors="replace")
+                # Check all cookies after this request
+                all_cookies = {c.name: c.value for c in self._cj}
+                logger.info(
+                    "SNX probe %s (UA=%s): HTTP %d, %d bytes, cookies=%s",
+                    path, ua, status, len(raw), list(all_cookies.keys()),
+                )
+                # Log more body content for extender and general pages to help
+                # diagnose CSHELL AJAX flow (find g_cshell_location, launch tokens, etc.)
+                if "/SNX/extender" in path or "/Portal/general" in path:
+                    for _cs in range(0, min(len(raw), 16000), 4000):
+                        logger.debug("SNX probe %s body[%d:%d]: %r",
+                                     path, _cs, _cs + 4000, raw[_cs:_cs + 4000])
+                else:
+                    logger.debug("SNX probe %s body[:2000]: %r", path, raw[:2000])
+                # New CCC-specific cookie?
+                for cname in ("CPCVPN_CCC_SID", "ccc_session", "CPCVPN_TUNNEL_COOKIE"):
+                    if cname in all_cookies:
+                        logger.info("SNX probe %s: CCC cookie %s=%.12s…", path, cname, all_cookies[cname])
+                        return all_cookies[cname]
+                # Auth token embedded in body?
+                m = _AUTH_PAT.search(raw)
+                if m:
+                    logger.info("SNX probe %s: body auth token %.12s…", path, m.group(1))
+                    return m.group(1)
+                # Log any SNX/client launch patterns for diagnosis
+                hits = _SNX_LAUNCH_PAT.findall(raw)
+                if hits:
+                    logger.info("SNX probe %s: %d launch patterns: %s", path, len(hits), hits[:3])
+            except urllib.error.HTTPError as exc:
+                logger.info("SNX probe %s: HTTP %d error", path, exc.code)
+                try:
+                    err_body = exc.read(512).decode("utf-8", errors="replace")
+                    logger.debug("SNX probe %s error body: %r", path, err_body)
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.debug("SNX probe %s: %s", path, exc)
+            return None
+
+        # ── Endpoints from SNX binary strings (SNXClient UA) ────────────
+        # These are accessed by the SNX binary after the portal page is shown.
+        # The browser session cookie (set by portal auth) is included automatically
+        # by our cookie jar — the server may issue a CCC token in return.
+        for path in (
+            "/reauthentication.html",   # SNX binary: GET /reauthentication.html HTTP/1.0
+            "/extender.html",           # SNX binary: GET /extender.html HTTP/1.0
+            "/SNX/extender",            # SNX binary: GET /SNX/extender HTTP/1.1
+            "/SNX/SNX",                 # SNX binary: GET /SNX/SNX (portal SNX launch page)
+        ):
+            token = _probe(path, ua=_SNX_UA)
+            if token:
+                return token
+
+        # ── CCC /clients/ endpoint (Check Point Client Communication protocol) ──
+        # The SNX binary uses CCC S-expression protocol to authenticate natively.
+        # A CCC session token (active_key from CCCserverResponse) is what
+        # /SNX/ReLogin actually accepts — not the portal browser session
+        # (CPCVPN_SESSION_ID which is a *browser* session token).
+        #
+        # CCC flow: ClientHello → ServerHello → UserPass → (Challenge) →
+        #            ChallengeResponse → active_key written to ~/.snxrc
+        #
+        # Here we only probe with a minimal ClientHello to detect CCC availability
+        # and log the server's capabilities for diagnostic purposes.
+        # Full CCC auth would require implementing the complete multi-step exchange.
+        _CCC_HELLO = (
+            "(CCCclientRequest"
+            " :RequestHeader ("
+            "  :id (0)"
+            "  :session_id (\"\")"
+            "  :protocol_version (100)"
+            "  :KeepAlive (false)"
+            " )"
+            " :RequestData ("
+            "  :client_type (4)"
+            "  :client_version (1)"
+            "  :endpoint_os (linux)"
+            "  :selected_realm_id (\"\")"
+            " )"
+            ")\n"
+        )
+        ccc_url = self._url("/clients/")
+        ccc_found = False
+        for ccc_ct in ("application/x-snx-request", "text/plain"):
+            ccc_req = urllib.request.Request(
+                ccc_url, method="POST", data=_CCC_HELLO.encode("utf-8"),
+            )
+            ccc_req.add_header("User-Agent", _SNX_UA)
+            ccc_req.add_header("Content-Type", ccc_ct)
+            ccc_req.add_header("Accept", "*/*")
+            try:
+                with self._opener.open(ccc_req, timeout=5) as resp:
+                    ccc_status = resp.status
+                    ccc_body = resp.read(8192).decode("utf-8", errors="replace")
+                logger.info(
+                    "CCC /clients/ (CT=%s): HTTP %d, %d bytes — CCC protocol available!",
+                    ccc_ct, ccc_status, len(ccc_body),
+                )
+                logger.debug("CCC response[:800]: %r", ccc_body[:800])
+                # Check for a CCC active_key token (used as auth_id in ~/.snxrc)
+                m_key = re.search(
+                    r':active_key\s*\(\s*["\']?([0-9a-fA-F]{16,})["\']?\s*\)',
+                    ccc_body,
+                )
+                if m_key:
+                    logger.info("CCC active_key obtained: %.12s…", m_key.group(1))
+                    return m_key.group(1)
+                # Log any realm / capability info from server hello
+                m_realm = re.search(r':selected_realm_id\s*\(\s*"([^"]+)"', ccc_body)
+                if m_realm:
+                    logger.info("CCC server realm: %r", m_realm.group(1))
+                ccc_found = True
+                break
+            except urllib.error.HTTPError as exc:
+                err_body = b""
+                try:
+                    err_body = exc.read(256)
+                except Exception:
+                    pass
+                logger.info(
+                    "CCC /clients/ (CT=%s): HTTP %d — %r",
+                    ccc_ct, exc.code,
+                    err_body[:120].decode("utf-8", errors="replace"),
+                )
+                if exc.code == 404:
+                    logger.info(
+                        "CCC: /clients/ not found (HTTP 404) — "
+                        "server does not support CCC protocol on this path."
+                    )
+                    break
+            except Exception as exc:
+                logger.debug("CCC /clients/ (CT=%s): %s", ccc_ct, exc)
+                break
+
+        # ── JS files (browser UA) — log SNX launch patterns ─────────────
+        # Paths confirmed from portal success page body and /SNX/extender:
+        # • /Portal/general.js          — from /SNX/extender and portal page (general.js)
+        # • /SNX/CSHELL/cshell_utils.js — from /SNX/extender references
+        # • /includes/js/cshell-common.js — loaded by portal SUCCESS page (body[200:600])
+        for js_path in (
+            "/Portal/general.js",               # from /SNX/extender body
+            "/SNX/CSHELL/cshell_utils.js",      # from /SNX/extender references
+            "/includes/js/cshell-common.js",    # from portal success page body
+        ):
+            url = self._url(js_path)
+            req = urllib.request.Request(url, method="GET")
+            self._set_browser_headers(req, referer=self._url("/"))
+            try:
+                with self._opener.open(req, timeout=5) as resp:
+                    js_text = resp.read(131072).decode("utf-8", errors="replace")
+                logger.info("Portal JS %s: %d bytes", js_path, len(js_text))
+                hits = _SNX_LAUNCH_PAT.findall(js_text)
+                if hits:
+                    logger.info(
+                        "Portal JS %s: %d SNX patterns. First 10: %s",
+                        js_path, len(hits), hits[:10],
+                    )
+                else:
+                    logger.debug("Portal JS %s: no SNX launch patterns found.", js_path)
+                # Log JS content at debug: cshell files (full) + general.js (to find
+                # g_cshell_location and AJAX CSHELL launch mechanism)
+                if "cshell" in js_path.lower() or "general.js" in js_path.lower():
+                    # Log in 8k chunks; general.js is 14583 bytes, cshell_utils is 15506
+                    for _chunk_start in range(0, min(len(js_text), 24000), 8000):
+                        logger.debug(
+                            "Portal JS %s content[%d:%d]: %r",
+                            js_path, _chunk_start, _chunk_start + 8000,
+                            js_text[_chunk_start:_chunk_start + 8000],
+                        )
+            except urllib.error.HTTPError as exc:
+                logger.info("Portal JS %s: HTTP %d", js_path, exc.code)
+            except Exception as exc:
+                logger.debug("Portal JS %s: %s", js_path, exc)
+
+        logger.info(
+            "Portal SNX resources: no CCC token found. "
+            "CPCVPN_SESSION_ID (browser session) will be written to ~/.snxrc — "
+            "/SNX/ReLogin may reject it if the server requires a CCC session token. "
+            "CCC protocol %s on /clients/.",
+            "available but returned no active_key" if ccc_found else "not available",
+        )
+        return None
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -763,6 +1131,7 @@ class PortalAuth:
         req: urllib.request.Request,
         referer: Optional[str],
     ) -> None:
+        """Add standard browser HTTP headers to *req*."""
         req.add_header("User-Agent", _USER_AGENT)
         req.add_header("Accept", "text/html,application/xhtml+xml,application/json,*/*")
         req.add_header("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")

@@ -1,0 +1,663 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html">
+
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
+        <title>Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary) - snxui Documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=8dab3a3b" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../sphinx/index.html"><div class="brand">snxui Documentation</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../sphinx/index.html">
+  
+  <span class="sidebar-brand-text">snxui Documentation</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="../_sources/plans/eager-hopping-cocke.md.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="pluggable-vpn-backend-snx-rs-snx-binary">
+<h1>Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)<a class="headerlink" href="#pluggable-vpn-backend-snx-rs-snx-binary" title="Link to this heading">¶</a></h1>
+<section id="id1">
+<h2>Контекст<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h2>
+<p><strong>Почему сейчас</strong>: Накопленный опыт интеграции с <code class="docutils literal notranslate"><span class="pre">ug.vpn.rt.ru</span></code> выявил системные проблемы текущей архитектуры, которые нельзя решить локальными патчами:</p>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Проблема</p></th>
+<th class="head"><p>Проявление</p></th>
+<th class="head"><p>Корень</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Двойной OTP</p></td>
+<td><p>Пользователь вводит OTP дважды (портал + PTY)</p></td>
+<td><p>PTY-подход требует свой OTP после portal auth</p></td>
+</tr>
+<tr class="row-odd"><td><p>Низкая скорость</p></td>
+<td><p>Хуже, чем snx-rs или браузер</p></td>
+<td><p>snx binary поддерживает только SSL туннель</p></td>
+</tr>
+<tr class="row-even"><td><p>Хрупкость PTY</p></td>
+<td><p>Новая версия snx binary ломает подключение</p></td>
+<td><p>10+ regex на PTY вывод</p></td>
+</tr>
+<tr class="row-odd"><td><p>HTML scraping</p></td>
+<td><p>Portal auth регрессирует при апдейтах портала</p></td>
+<td><p>regex вместо DOM parser</p></td>
+</tr>
+<tr class="row-even"><td><p>Сложность</p></td>
+<td><p>1400 LOC snx_backend.py, 1300 LOC portal_auth.py</p></td>
+<td><p>3 auth протокола в одном файле</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>snx-rs</strong> (Rust, open source, работает на том же сервере) решает всё: CCC протокол нативно, IPSec/SSL туннели, единственный OTP через CCC MultiChallenge.</p>
+<p><strong>Цель</strong>: Pluggable backend архитектура — snx-rs как primary, /usr/bin/snx как fallback. Профиль выбирает backend.</p>
+</section>
+<hr class="docutils" />
+<section id="id2">
+<h2>Архитектура<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────────────────────────────┐
+│  GTK4 UI (home_page, dialogs)           │
+│  ConnectionState, StatusCallback        │
+└─────────────┬───────────────────────────┘
+              │ VPNBackend (ABC)
+    ┌─────────┴──────────┐
+    │                    │
+┌───▼──────────┐  ┌──────▼──────────┐
+│ SNXRsBackend │  │ SNXBinaryBackend│
+│ (snxd/snxctl)│  │ (pexpect PTY)   │
+│ NEW          │  │ существующий код│
+└──────────────┘  └─────────────────┘
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="id3">
+<h2>Файлы: что создать / изменить / удалить<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h2>
+<section id="id4">
+<h3>Новые файлы<a class="headerlink" href="#id4" title="Link to this heading">¶</a></h3>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/vpn_backend.py</span></code></strong> (~80 LOC)</p>
+<ul class="simple">
+<li><p>ABC <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> с методами <code class="docutils literal notranslate"><span class="pre">connect()</span></code>, <code class="docutils literal notranslate"><span class="pre">disconnect()</span></code>, <code class="docutils literal notranslate"><span class="pre">state</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BackendFactory.create(profile)</span></code> — выбор backend по <code class="docutils literal notranslate"><span class="pre">profile.backend</span></code> и доступности</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">detect_snx_rs()</span></code> — <code class="docutils literal notranslate"><span class="pre">shutil.which(&quot;snxd&quot;)</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">detect_snx_binary()</span></code> — <code class="docutils literal notranslate"><span class="pre">shutil.which(&quot;snx&quot;)</span></code></p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_rs_backend.py</span></code></strong> (~350 LOC)</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">SNXRsBackend(VPNBackend)</span></code> — интеграция со snx-rs</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">_write_config(profile,</span> <span class="pre">password)</span></code> → <code class="docutils literal notranslate"><span class="pre">~/.config/snx-rs/snx-rs.conf</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">_ensure_daemon()</span></code> — запустить snxd через privilege_handler если не запущен</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">connect(profile,</span> <span class="pre">password,</span> <span class="pre">status_cb,</span> <span class="pre">two_factor_cb)</span></code>:</p>
+<ol class="arabic simple">
+<li><p>Записать конфиг</p></li>
+<li><p>Поднять snxd daemon</p></li>
+<li><p>Если нужен OTP → <code class="docutils literal notranslate"><span class="pre">two_factor_cb</span></code> → получить код → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">connect</span> <span class="pre">--mfa-code</span> <span class="pre">CODE</span></code></p></li>
+<li><p>Иначе → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">connect</span></code></p></li>
+<li><p>Поллинг <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">status</span></code> каждые 2с до Connected</p></li>
+</ol>
+</li>
+<li><p><code class="docutils literal notranslate"><span class="pre">disconnect()</span></code> → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">disconnect</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">_parse_status(output)</span></code> → <code class="docutils literal notranslate"><span class="pre">ConnectionState</span></code> + IP</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">fetch_login_types(server)</span></code> → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code> → список realm/login-type для UI</p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">tests/test_snx_rs_backend.py</span></code></strong> (~100 LOC)</p>
+<ul class="simple">
+<li><p>Мокирование subprocess для snxd, snxctl</p></li>
+<li><p>Тесты: connect success, connect with MFA, disconnect, status parsing</p></li>
+</ul>
+</section>
+<section id="id5">
+<h3>Изменить существующие<a class="headerlink" href="#id5" title="Link to this heading">¶</a></h3>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/types.py</span></code></strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Profile</span><span class="p">:</span>
+    <span class="c1"># Новые поля для snx-rs backend:</span>
+    <span class="n">backend</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;auto&quot;</span><span class="p">,</span> <span class="s2">&quot;snx_rs&quot;</span><span class="p">,</span> <span class="s2">&quot;snx&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span>
+    <span class="n">login_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>           <span class="c1"># CCC login type (snx-rs: required)</span>
+    <span class="n">transport_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span>   <span class="c1"># snx-rs: auto/kernel/udp/tcpt</span>
+    <span class="n">ignore_server_cert</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>  <span class="c1"># snx-rs TLS bypass</span>
+    <span class="c1"># tunnel_type уже есть (SSL/IPSec) ✓</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/profile_manager.py</span></code></strong></p>
+<ul class="simple">
+<li><p>Версия формата v7 (v6 → v7): добавить <code class="docutils literal notranslate"><span class="pre">backend</span></code>, <code class="docutils literal notranslate"><span class="pre">login_type</span></code>, <code class="docutils literal notranslate"><span class="pre">transport_type</span></code>, <code class="docutils literal notranslate"><span class="pre">ignore_server_cert</span></code></p></li>
+<li><p>Миграция: v6 записи получают <code class="docutils literal notranslate"><span class="pre">backend=&quot;snx&quot;</span></code> (не “auto”) — сохраняют текущее поведение</p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_backend.py</span></code></strong></p>
+<ul class="simple">
+<li><p>Переименовать <code class="docutils literal notranslate"><span class="pre">SNXBackend</span></code> → <code class="docutils literal notranslate"><span class="pre">SNXBinaryBackend</span></code>, унаследовать от <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code></p></li>
+<li><p>Сохранить весь существующий код без изменений (обратная совместимость)</p></li>
+<li><p>Файл остаётся <code class="docutils literal notranslate"><span class="pre">snx_backend.py</span></code> для совместимости с импортами</p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></strong></p>
+<ul class="simple">
+<li><p>Заменить <code class="docutils literal notranslate"><span class="pre">SNXBackend()</span></code> на <code class="docutils literal notranslate"><span class="pre">BackendFactory.create(profile)</span></code> при connect</p></li>
+<li><p>Остальная логика неизменна (интерфейс <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> совпадает)</p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/ui/dialogs.py</span></code></strong> (ProfileDialog)</p>
+<ul class="simple">
+<li><p>Добавить группу “Backend” с:</p>
+<ul>
+<li><p>Selector: Auto / snx-rs / snx binary</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">login_type</span></code> поле (Adw.EntryRow) с кнопкой “Discover” (запускает <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">transport_type</span></code> ComboRow (auto/kernel/udp/tcpt)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ignore_server_cert</span></code> toggle</p></li>
+</ul>
+</li>
+<li><p>Скрыть <code class="docutils literal notranslate"><span class="pre">portal_auth</span></code>, <code class="docutils literal notranslate"><span class="pre">combined_auth</span></code>, <code class="docutils literal notranslate"><span class="pre">portal_reconnect_mode</span></code> когда backend=snx_rs
+(они специфичны для snx binary)</p></li>
+</ul>
+<p><strong><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></strong></p>
+<ul class="simple">
+<li><p>Добавить в [tool.poetry.extras] или README: “требует snx-rs (snxd, snxctl)”</p></li>
+<li><p>Добавить в <code class="docutils literal notranslate"><span class="pre">[project]</span></code> → <code class="docutils literal notranslate"><span class="pre">optional-dependencies</span></code> или системные требования</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="snx-rs-config-format">
+<h2>snx-rs config format<a class="headerlink" href="#snx-rs-config-format" title="Link to this heading">¶</a></h2>
+<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="c1"># ~/.config/snx-rs/snx-rs.conf (генерируется snxui)</span>
+<span class="na">server-name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">ug.vpn.rt.ru</span>
+<span class="na">user-name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">i.y.tischenko</span>
+<span class="na">login-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">vpn_ssl_vpn_UF-Username_RADIUS</span>
+<span class="na">tunnel-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">ipsec</span>
+<span class="na">transport-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">auto</span>
+<span class="na">ignore-server-cert</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">false</span>
+</pre></div>
+</div>
+<p><strong>Пароль</strong>: НЕ сохраняется в конфиге — передаётся через переменную окружения или stdin снxd при запуске. Keyring снxui уже хранит пароль — читаем через <code class="docutils literal notranslate"><span class="pre">CredentialStore</span></code>, передаём в snxd через безопасный канал (stdin, env var <code class="docutils literal notranslate"><span class="pre">SNX_PASSWORD</span></code>).</p>
+</section>
+<hr class="docutils" />
+<section id="mfa-flow-snx-rs-backend">
+<h2>MFA Flow (snx-rs backend)<a class="headerlink" href="#mfa-flow-snx-rs-backend" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>SNXRsBackend.connect()
+  │
+  ├─ profile.two_factor_method == TOTP + secret в keyring?
+  │   → auto_totp() → mfa_code = &quot;123456&quot;
+  │
+  ├─ profile.two_factor_method == RADIUS/CHALLENGE?
+  │   → GLib.idle_add → TwoFactorDialog (как сейчас)
+  │   → Event.wait(120) → mfa_code = &quot;654321&quot;
+  │
+  └─ two_factor_method == NONE?
+      → mfa_code = None (snx-rs попробует без OTP)
+  │
+  ↓
+snxctl connect [--mfa-code {mfa_code}]
+</pre></div>
+</div>
+<p><strong>Единственный OTP</strong> — не нужен второй ввод. CCC MultiChallenge обрабатывает snx-rs внутри.</p>
+</section>
+<hr class="docutils" />
+<section id="daemon-lifecycle">
+<h2>Daemon Lifecycle<a class="headerlink" href="#daemon-lifecycle" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>snxui запуск:
+  snxctl status → Connected? → синхронизировать UI state
+
+Нажать Connect:
+  snxd запущен? нет → sudo snxd --daemon (через privilege_handler)
+  snxctl connect [--mfa-code ...]
+  poll snxctl status (2с) до Connected или ERROR
+
+Нажать Disconnect:
+  snxctl disconnect
+  (snxd остаётся запущенным для следующего connect)
+
+snxui завершение:
+  если Connected → показать диалог &quot;Отключить VPN?&quot; → snxctl disconnect
+  snxd оставить работать (пользователь может переподключиться)
+</pre></div>
+</div>
+</section>
+<hr class="docutils" />
+<section id="snx-rs">
+<h2>Что убирается из сложности (при использовании snx-rs)<a class="headerlink" href="#snx-rs" title="Link to this heading">¶</a></h2>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Убирается</p></th>
+<th class="head"><p>LOC</p></th>
+<th class="head"><p>Причина</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>PTY pexpect автоматизация</p></td>
+<td><p>~600</p></td>
+<td><p>snx-rs не нужен PTY</p></td>
+</tr>
+<tr class="row-odd"><td><p>HTML scraping portal_auth.py</p></td>
+<td><p>~800</p></td>
+<td><p>CCC нативно в snx-rs</p></td>
+</tr>
+<tr class="row-even"><td><p>ccc_auth.py (используется snx-rs)</p></td>
+<td><p>~500</p></td>
+<td><p>snx-rs делает сам</p></td>
+</tr>
+<tr class="row-odd"><td><p>regex паттерны PTY вывода</p></td>
+<td><p>~50</p></td>
+<td><p>нет PTY</p></td>
+</tr>
+<tr class="row-even"><td><p>combined_auth логика</p></td>
+<td><p>~80</p></td>
+<td><p>не нужна</p></td>
+</tr>
+<tr class="row-odd"><td><p>portal_reconnect_mode</p></td>
+<td><p>~120</p></td>
+<td><p>не нужен</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Эти файлы <strong>остаются</strong> для snx binary fallback. Но для snx-rs backend — не используются.</p>
+</section>
+<hr class="docutils" />
+<section id="id6">
+<h2>Фазы реализации<a class="headerlink" href="#id6" title="Link to this heading">¶</a></h2>
+<section id="abc-1">
+<h3>Фаза 1: ABC + типы (1 день)<a class="headerlink" href="#abc-1" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>Создать <code class="docutils literal notranslate"><span class="pre">vpn_backend.py</span></code> с <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> ABC и <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code></p></li>
+<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">types.py</span></code>: новые поля Profile</p></li>
+<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">profile_manager.py</span></code>: миграция v6→v7</p></li>
+<li><p>Рефакторинг <code class="docutils literal notranslate"><span class="pre">SNXBackend</span></code> → <code class="docutils literal notranslate"><span class="pre">SNXBinaryBackend(VPNBackend)</span></code></p></li>
+<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">home_page.py</span></code>: использовать <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code></p></li>
+<li><p>Обновить тесты</p></li>
+</ol>
+</section>
+<section id="snxrsbackend-2">
+<h3>Фаза 2: SNXRsBackend (2 дня)<a class="headerlink" href="#snxrsbackend-2" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>Создать <code class="docutils literal notranslate"><span class="pre">snx_rs_backend.py</span></code></p></li>
+<li><p>Config generation, daemon management, status polling</p></li>
+<li><p>MFA integration (TwoFactorDialog → –mfa-code)</p></li>
+<li><p>Unit тесты с мокированием subprocess</p></li>
+</ol>
+</section>
+<section id="ui-1">
+<h3>Фаза 3: UI (1 день)<a class="headerlink" href="#ui-1" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>ProfileDialog: backend selector + login_type + transport_type</p></li>
+<li><p>“Discover” кнопка → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code> → заполнить login_type</p></li>
+<li><p>Скрыть snx-binary-specific поля при backend=snx_rs</p></li>
+<li><p>Тесты диалога</p></li>
+</ol>
+</section>
+<section id="id7">
+<h3>Фаза 4: Интеграция и тестирование (1 день)<a class="headerlink" href="#id7" title="Link to this heading">¶</a></h3>
+<ol class="arabic simple">
+<li><p>End-to-end тест с реальным snx-rs (на сервере пользователя)</p></li>
+<li><p>Проверка fallback на snx binary</p></li>
+<li><p>Проверка auto-detect при разных комбинациях установленных бинарей</p></li>
+<li><p>Обновление README: инструкция по установке snx-rs</p></li>
+</ol>
+</section>
+</section>
+<hr class="docutils" />
+<section id="id8">
+<h2>Критические файлы<a class="headerlink" href="#id8" title="Link to this heading">¶</a></h2>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Файл</p></th>
+<th class="head"><p>Действие</p></th>
+<th class="head"><p>Риск</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/vpn_backend.py</span></code></p></td>
+<td><p>CREATE</p></td>
+<td><p>Низкий</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_rs_backend.py</span></code></p></td>
+<td><p>CREATE</p></td>
+<td><p>Средний (subprocess, async)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/types.py</span></code></p></td>
+<td><p>MODIFY</p></td>
+<td><p>Низкий (additive)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/profile_manager.py</span></code></p></td>
+<td><p>MODIFY</p></td>
+<td><p>Средний (миграция данных)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_backend.py</span></code></p></td>
+<td><p>MODIFY</p></td>
+<td><p>Низкий (rename class)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></p></td>
+<td><p>MODIFY</p></td>
+<td><p>Низкий (1 строка замены)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/ui/dialogs.py</span></code></p></td>
+<td><p>MODIFY</p></td>
+<td><p>Средний (новая UI группа)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Существующие файлы <code class="docutils literal notranslate"><span class="pre">portal_auth.py</span></code>, <code class="docutils literal notranslate"><span class="pre">ccc_auth.py</span></code> — <strong>без изменений</strong> (используются SNXBinaryBackend).</p>
+</section>
+<hr class="docutils" />
+<section id="id9">
+<h2>Верификация<a class="headerlink" href="#id9" title="Link to this heading">¶</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Тесты без snx-rs установленного</span>
+python3<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-q
+<span class="c1"># Ожидаем: 570+ passed (все старые + новые)</span>
+
+<span class="c1"># 2. Тест auto-detect</span>
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;from snxui.core.vpn_backend import detect_snx_rs; print(detect_snx_rs())&quot;</span>
+
+<span class="c1"># 3. Тест config generation</span>
+python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<span class="s2">from snxui.core.snx_rs_backend import SNXRsBackend</span>
+<span class="s2">from snxui.core.types import Profile</span>
+<span class="s2">p = Profile(server=&#39;vpn.test&#39;, username=&#39;user&#39;, login_type=&#39;vpn_test&#39;)</span>
+<span class="s2">backend = SNXRsBackend()</span>
+<span class="s2">print(backend._build_config(p))</span>
+<span class="s2">&quot;</span>
+
+<span class="c1"># 4. Реальное подключение (требует snx-rs установленный)</span>
+<span class="c1"># Запустить snxui, создать профиль с backend=snx_rs, нажать Connect</span>
+<span class="c1"># Ожидаем: одиночный OTP, IPSec туннель, скорость выше</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          
+          
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)</a><ul>
+<li><a class="reference internal" href="#id1">Контекст</a></li>
+<li><a class="reference internal" href="#id2">Архитектура</a></li>
+<li><a class="reference internal" href="#id3">Файлы: что создать / изменить / удалить</a><ul>
+<li><a class="reference internal" href="#id4">Новые файлы</a></li>
+<li><a class="reference internal" href="#id5">Изменить существующие</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#snx-rs-config-format">snx-rs config format</a></li>
+<li><a class="reference internal" href="#mfa-flow-snx-rs-backend">MFA Flow (snx-rs backend)</a></li>
+<li><a class="reference internal" href="#daemon-lifecycle">Daemon Lifecycle</a></li>
+<li><a class="reference internal" href="#snx-rs">Что убирается из сложности (при использовании snx-rs)</a></li>
+<li><a class="reference internal" href="#id6">Фазы реализации</a><ul>
+<li><a class="reference internal" href="#abc-1">Фаза 1: ABC + типы (1 день)</a></li>
+<li><a class="reference internal" href="#snxrsbackend-2">Фаза 2: SNXRsBackend (2 дня)</a></li>
+<li><a class="reference internal" href="#ui-1">Фаза 3: UI (1 день)</a></li>
+<li><a class="reference internal" href="#id7">Фаза 4: Интеграция и тестирование (1 день)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id8">Критические файлы</a></li>
+<li><a class="reference internal" href="#id9">Верификация</a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    </body>
+</html>

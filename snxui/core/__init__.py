@@ -3,7 +3,8 @@
 from .types import Profile, ConnectionStatus, ConnectionState
 from .profile_manager import ProfileManager
 from .credential_store import CredentialStore
-from .snx_backend import SNXBackend
+from .snx_backend import SNXBackend, SNXBinaryBackend
+from .vpn_backend import VPNBackend, BackendFactory
 
 __all__ = [
     "Profile",
@@ -12,4 +13,7 @@ __all__ = [
     "ProfileManager",
     "CredentialStore",
     "SNXBackend",
+    "SNXBinaryBackend",
+    "VPNBackend",
+    "BackendFactory",
 ]

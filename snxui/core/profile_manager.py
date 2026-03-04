@@ -30,7 +30,7 @@ from .types import Profile, TunnelType, TwoFactorMethod
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 6
+_FILE_FORMAT_VERSION = 7
 
 
 def _xdg_config_home() -> Path:
@@ -71,6 +71,10 @@ def _profile_to_dict(profile: Profile) -> dict:
         "tunnel_type": profile.tunnel_type.value,
         "esp_settings": profile.esp_settings,
         "ike_settings": profile.ike_settings,
+        "backend": profile.backend,
+        "login_type": profile.login_type,
+        "transport_type": profile.transport_type,
+        "ignore_server_cert": profile.ignore_server_cert,
     }
 
 
@@ -132,6 +136,10 @@ def _profile_from_dict(data: dict) -> Profile:
         tunnel_type=tunnel_type,
         esp_settings=data.get("esp_settings") or None,
         ike_settings=data.get("ike_settings") or None,
+        backend=data.get("backend", "auto"),
+        login_type=data.get("login_type", ""),
+        transport_type=data.get("transport_type", "auto"),
+        ignore_server_cert=bool(data.get("ignore_server_cert", False)),
     )
 
 
@@ -256,6 +264,14 @@ class ProfileManager:
             for profile_data in (data.get("profiles") or {}).values():
                 profile_data.setdefault("portal_auth", False)
             data["version"] = 6
+        if version < 7:
+            for profile_data in (data.get("profiles") or {}).values():
+                # Existing profiles use the SNX binary — preserve behavior.
+                profile_data.setdefault("backend", "snx")
+                profile_data.setdefault("login_type", "")
+                profile_data.setdefault("transport_type", "auto")
+                profile_data.setdefault("ignore_server_cert", False)
+            data["version"] = 7
         return data
 
     def _with_file_lock(self, fn: Callable[[], Any]) -> Any:

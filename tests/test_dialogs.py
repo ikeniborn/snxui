@@ -210,12 +210,14 @@ class TestProfileDialog:
         save_row = MagicMock()
 
         # EntryRow returns the mock row objects in sequence.
-        # Order: name, server, user, domain, ca, cert, esp, ike
+        # Order: name, server, user, domain, ca, cert, esp, ike, login_type
         domain_row = MagicMock()
         domain_row.get_text.return_value = ""
         esp_row = MagicMock()
         ike_row = MagicMock()
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
+        login_type_row = MagicMock()
+        login_type_row.get_text.return_value = ""
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row, login_type_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 
@@ -317,11 +319,15 @@ class TestProfileDialog:
         ike_row = MagicMock()
         esp_row.get_text.return_value = ""
         ike_row.get_text.return_value = ""
-        # EntryRow order: name, server, user, domain, ca, cert, esp, ike
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
+        login_type_row = MagicMock()
+        login_type_row.get_text.return_value = ""
+        ignore_cert_row = MagicMock()
+        ignore_cert_row.get_active.return_value = False
+        # EntryRow order: name, server, user, domain, ca, cert, esp, ike, login_type
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row, login_type_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
-        # SwitchRow order: save_password, save_totp_secret, combined_auth, portal_auth.
-        local_adw.SwitchRow.side_effect = [save_row, save_totp_row, combined_auth_row, portal_auth_row]
+        # SwitchRow order: save_password, save_totp_secret, combined_auth, portal_auth, ignore_server_cert.
+        local_adw.SwitchRow.side_effect = [save_row, save_totp_row, combined_auth_row, portal_auth_row, ignore_cert_row]
         local_adw.ComboRow.return_value = method_row
         local_adw.PasswordEntryRow.return_value = totp_row
 
@@ -381,10 +387,12 @@ class TestProfileDialog:
         domain_row.get_text.return_value = ""
         esp_row = MagicMock()
         ike_row = MagicMock()
+        login_type_row = MagicMock()
         esp_row.get_text.return_value = ""
         ike_row.get_text.return_value = ""
-        # EntryRow order: name, server, user, domain, ca, cert, esp, ike
-        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row]
+        login_type_row.get_text.return_value = ""
+        # EntryRow order: name, server, user, domain, ca, cert, esp, ike, login_type
+        local_adw.EntryRow.side_effect = [name_row, server_row, user_row, domain_row, ca_row, cert_row, esp_row, ike_row, login_type_row]
         local_adw.SpinRow.new_with_range.return_value = port_row
         local_adw.SwitchRow.return_value = save_row
 

@@ -43,6 +43,7 @@ except ImportError:
     )
 
 from .types import ConnectionState, ConnectionStatus, Profile, TwoFactorCallback
+from .vpn_backend import VPNBackend
 
 # ---------------------------------------------------------------------------
 # Regex patterns for SNX output
@@ -149,6 +150,29 @@ _PASSWORD_TIMEOUT = 30
 _DISCONNECT_TIMEOUT = 15
 _MONITOR_INTERVAL = 5
 
+_SNXRC_PATH = Path.home() / ".snxrc"
+
+
+def _clear_snxrc() -> None:
+    """Remove ``~/.snxrc`` to prevent SNX from using a stale or invalid auth_id.
+
+    SNX binary always reads ``~/.snxrc`` at start-up and includes any stored
+    ``auth_id`` in its HTTP authentication request — even when launched without
+    ``-r``.  If ``auth_id`` contains a portal session token (CPCVPN_OBSCURE_KEY)
+    rather than a CCC ``active_key``, the server rejects it immediately with
+    "Connection aborted" before issuing any OTP challenge.  Deleting the file
+    ensures SNX performs a clean credential exchange.
+    """
+    try:
+        if _SNXRC_PATH.exists():
+            _SNXRC_PATH.unlink()
+            logger.info(
+                "Cleared ~/.snxrc to prevent stale portal auth_id from "
+                "interfering with fresh SNX authentication."
+            )
+    except OSError:
+        logger.debug("Failed to delete ~/.snxrc", exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # PTY output logger
@@ -187,16 +211,17 @@ class _LogfileCapture:
 # ---------------------------------------------------------------------------
 
 
-class SNXBackend:
+class SNXBinaryBackend(VPNBackend):
     """High-level interface for establishing and monitoring SNX VPN connections.
 
+    Uses pexpect to drive the /usr/bin/snx binary via a pseudo-TTY.
     Only one connection is supported at a time per instance.  The backend is
-    intentionally synchronous (no async/await) for Phase 1; UI callbacks are
-    dispatched from a background thread.
+    intentionally synchronous (no async/await); UI callbacks are dispatched
+    from a background thread.
 
     Example::
 
-        backend = SNXBackend()
+        backend = SNXBinaryBackend()
         ok = backend.connect(profile, password, callback=on_status_change)
         # ...
         backend.disconnect()
@@ -211,6 +236,15 @@ class SNXBackend:
         # Set to True by _run_portal_auth() when the server rejects credentials.
         # Read by home_page to decide whether to re-ask for password.
         self._portal_credentials_failed: bool = False
+        # Set to True by _run_portal_auth() when portal auth succeeds.
+        # Causes _build_args() to pass -r so SNX reads ~/.snxrc and skips
+        # its own credential/OTP exchange (eliminates the double-OTP problem).
+        self._portal_auth_ok: bool = False
+        # Set to True by _run_portal_auth() when CCC auth succeeded and produced
+        # an active_key written to ~/.snxrc.  Only when True is -r flag safe to
+        # use — otherwise /SNX/ReLogin rejects the session token and reports
+        # "Connection aborted".  When False, SNX falls back to regular PTY auth.
+        self._ccc_auth_ok: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -246,6 +280,8 @@ class SNXBackend:
             )
 
         self._portal_credentials_failed = False
+        self._portal_auth_ok = False
+        self._ccc_auth_ok = False
         binary = self._find_snx_binary()
         with self._lock:
             snapshot = self._update_status(
@@ -257,10 +293,16 @@ class SNXBackend:
             ok, cached_otp = self._run_portal_auth(profile, password, status_callback, two_factor_callback)
             if ok is not None:
                 return ok
-            # ok=None → portal auth succeeded and wrote snxrc → continue to SNX.
-            # If the portal collected an OTP, wrap two_factor_callback with a one-shot
-            # that returns the cached value so the SNX PTY stage does not prompt again.
-            if cached_otp is not None:
+            # ok=None → portal auth succeeded; _run_portal_auth set self._portal_auth_ok=True.
+            # When CCC auth also succeeded (_ccc_auth_ok=True), we use -r mode and SNX
+            # skips OTP — the cached portal OTP is not needed in the PTY.
+            # When CCC auth FAILED (_ccc_auth_ok=False), we fall back to full SNX PTY auth
+            # (no -r).  In that case the cached portal OTP is STALE (RADIUS OTPs are
+            # one-time-use), so we must NOT pass it — the server will send a fresh OTP
+            # challenge to SNX and the user must enter a new code.
+            if cached_otp is not None and self._ccc_auth_ok:
+                # -r mode: wrap callback with one-shot cached OTP so reconnect session
+                # doesn't prompt the user if the server somehow asks for OTP again.
                 _orig_cb = two_factor_callback
                 _otp_once: list[Optional[str]] = [cached_otp]
 
@@ -274,8 +316,16 @@ class SNXBackend:
                     return _orig_cb(prompt_text) if _orig_cb is not None else None
 
                 two_factor_callback = _one_shot_callback
+            elif cached_otp is not None and not self._ccc_auth_ok:
+                logger.info(
+                    "Portal OTP was cached but CCC auth failed → SNX will use full PTY auth. "
+                    "The cached OTP is STALE (RADIUS one-time-use); "
+                    "SNX will prompt for a fresh OTP via the 2FA dialog."
+                )
 
         args = self._build_args(profile)
+        # use_reconnect=True only when -r is actually in args (portal_reconnect_mode=True).
+        use_reconnect = "-r" in args
         logger.info("Launching SNX: %s %s", binary, " ".join(args))
 
         child = None  # Initialise before try so except can safely close it.
@@ -284,12 +334,9 @@ class SNXBackend:
                 binary, args, encoding="utf-8", timeout=_CONNECT_TIMEOUT, echo=False,
             )
             child.logfile_read = _LogfileCapture()
-            # Both portal-auth and regular profiles use the same SNX interaction
-            # sequence: await password prompt, send password, handle 2FA if asked.
-            # Portal auth already validated credentials via HTTPS; SNX still performs
-            # its own auth handshake (password + OTP if the gateway requests it).
             return self._run_connect_session(
                 child, password, profile, status_callback, two_factor_callback,
+                use_reconnect=use_reconnect,
             )
         except pexpect.exceptions.ExceptionPexpect as exc:
             return self._handle_pexpect_error(exc, child, profile, status_callback)
@@ -327,12 +374,19 @@ class SNXBackend:
         profile: Profile,
         status_callback: Optional[Callable[[ConnectionStatus], None]],
         two_factor_callback: Optional[TwoFactorCallback],
+        use_reconnect: bool = False,
     ) -> bool:
         """Execute the PTY interaction sequence after spawning SNX.
 
         Must be called from within the ``try`` block in :meth:`connect`
         so that pexpect exceptions propagate to the outer handler.
+
+        When *use_reconnect* is True (``portal_reconnect_mode=True`` and portal
+        auth succeeded, SNX launched with ``-u user -r``), the password is sent
+        and the server uses ``CPCVPN_OBSCURE_KEY`` from ``~/.snxrc`` to skip OTP.
         """
+        if use_reconnect:
+            return self._run_reconnect_session(child, password, profile, status_callback)
         early = self._await_password_prompt(child, profile, status_callback)
         if early is not None:
             return early
@@ -343,6 +397,150 @@ class SNXBackend:
             )
         child.sendline(password)
         return self._handle_post_password(child, profile, status_callback, two_factor_callback)
+
+    def _run_reconnect_session(
+        self,
+        child: "pexpect.spawn",
+        password: str,
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+    ) -> bool:
+        """PTY interaction for ``snx -r`` (reconnect) mode after portal auth.
+
+        SNX still prompts for the password even with ``-r``, but the server
+        uses ``CPCVPN_OBSCURE_KEY`` from ``~/.snxrc`` to skip the OTP/2FA
+        step — only the password exchange happens in the PTY.
+
+        Flow:
+          Phase 1 — await password prompt (or direct connect if server skips it):
+            * Password prompt → send password → Phase 2.
+            * Connected directly → success.
+            * Gateway cert confirm → auto-accept "y" → loop.
+          Phase 2 — await connected after password:
+            * Connected → success.
+            * 2FA / OTP prompt → portal session expired; report error.
+            * Auth/conn failure / EOF / TIMEOUT → report error.
+        """
+        logger.info(
+            "SNX reconnect mode: sending password, OTP should be skipped by portal session."
+        )
+
+        # ── Phase 1: await password prompt ──────────────────────────────
+        _CONFIRM_LIMIT = 3
+        for _round in range(_CONFIRM_LIMIT):
+            idx = child.expect(
+                [
+                    _RE_PASSWORD,         # 0 — password prompt
+                    _RE_CONNECTED,        # 1 — connected without password (rare)
+                    _RE_GATEWAY_CONFIRM,  # 2 — certificate confirmation
+                    _RE_ALREADY,          # 3
+                    _RE_AUTH_FAILED,      # 4
+                    _RE_CONN_FAILED,      # 5
+                    pexpect.EOF,          # 6
+                    pexpect.TIMEOUT,      # 7
+                ],
+                timeout=_PASSWORD_TIMEOUT,
+            )
+            full_output = (child.before or "") + (
+                child.after if isinstance(child.after, str) else ""
+            )
+
+            if idx == 0:
+                logger.debug("Reconnect: password prompt — sending password.")
+                child.sendline(password)
+                break  # proceed to phase 2
+            if idx == 1:
+                return self._finish_connected(child, profile, callback, full_output)
+            if idx == 2:
+                logger.info(
+                    "Reconnect: gateway certificate confirmation (round %d), auto-accepting.",
+                    _round + 1,
+                )
+                child.sendline("y")
+                continue
+            if idx == 3:
+                return self._handle_already_connected(child, profile, callback)
+            # idx 4,5,6,7 → pre-password failure; map to indices 1,2,3,4
+            return self._handle_connect_failure(child, profile, callback, idx - 3, full_output)
+        else:
+            logger.error("Reconnect: gateway confirmation loop exceeded %d rounds.", _CONFIRM_LIMIT)
+            return self._handle_connect_failure(child, profile, callback, 4, "")
+
+        # ── Phase 2: await connected (OTP skipped by portal session) ────
+        idx2 = child.expect(
+            [
+                _RE_CONNECTED,    # 0
+                _RE_2FA_ANY,      # 1 — OTP prompt: CPCVPN_OBSCURE_KEY not accepted
+                _RE_PASSWORD,     # 2 — second password: unexpected
+                _RE_AUTH_FAILED,  # 3
+                _RE_CONN_FAILED,  # 4
+                pexpect.EOF,      # 5
+                pexpect.TIMEOUT,  # 6
+            ],
+            timeout=_CONNECT_TIMEOUT,
+        )
+        full_output2 = (child.before or "") + (
+            child.after if isinstance(child.after, str) else ""
+        )
+
+        if idx2 == 0:
+            return self._finish_connected(child, profile, callback, full_output2)
+
+        if idx2 in (1, 2):
+            # Server requested OTP even with portal session — CPCVPN_OBSCURE_KEY
+            # was rejected or has expired.  Report an actionable error instead of
+            # showing the OTP dialog (the session must be refreshed).
+            logger.warning(
+                "Reconnect: server requested %s after portal auth — "
+                "CPCVPN_OBSCURE_KEY may be expired or invalid. Output: %r",
+                "OTP" if idx2 == 1 else "second password",
+                full_output2[:200],
+            )
+            with self._lock:
+                snapshot = self._update_status(
+                    ConnectionState.ERROR,
+                    profile=profile,
+                    error_message=(
+                        "Portal session expired — server still requested OTP. "
+                        "Disconnect and reconnect to start a new session."
+                    ),
+                )
+            child.close()
+            self._invoke_callback(callback, snapshot)
+            return False
+
+        if idx2 == 3:
+            # _RE_AUTH_FAILED matched (includes "SNX: Connection aborted.").
+            # In reconnect mode this means the server rejected our session token
+            # from ~/.snxrc.  Root cause: portal auth creates a *browser* session
+            # (CPCVPN_SESSION_ID); /SNX/ReLogin requires a *CCC session* token that
+            # the SNX binary generates when it does its own CCC-based auth.
+            # This server requires RADIUS MultiChallenge OTP which the SNX binary
+            # cannot handle natively, so a CCC session cannot be established.
+            logger.error(
+                "Reconnect: server rejected session token from ~/.snxrc "
+                "(Connection aborted). "
+                "This server likely requires CCC-based auth (not portal browser auth). "
+                "Output: %r",
+                full_output2[:200],
+            )
+            with self._lock:
+                snapshot = self._update_status(
+                    ConnectionState.ERROR,
+                    profile=profile,
+                    error_message=(
+                        "Server rejected portal session token (Connection aborted).\n"
+                        "Likely cause: the server requires 'User-Agent: SNXClient' "
+                        "to create a CCC-compatible session.  This was fixed in the "
+                        "current version — please disconnect and reconnect."
+                    ),
+                )
+            child.close()
+            self._invoke_callback(callback, snapshot)
+            return False
+
+        # idx 4,5,6 → failure; map to _handle_connect_failure indices 2,3,4
+        return self._handle_connect_failure(child, profile, callback, idx2 - 2, full_output2)
 
     def _send_combined_auth(
         self,
@@ -899,13 +1097,23 @@ class SNXBackend:
         MCForm) against ``/Login/Login`` and ``/Login/MultiChallenge``.
 
         After this method returns ``(None, ...)`` the SNX binary is launched in
-        the normal auth mode (no ``-r``).  SNX performs its own handshake with
-        the gateway and may prompt for password (and OTP, if the gateway requires
-        a second factor for the native binary path as well).
+        reconnect mode (``-u user -r``) so it reads the portal session token from
+        ``~/.snxrc`` and skips its own credential/OTP exchange.  Gateways that
+        require portal auth typically disable the plain CCC password path, making
+        ``-r`` the only viable mode.
 
-        ``write_snxrc`` is called on success for informational purposes and in
-        case the caller ever adds an explicit ``-r`` fallback in future.  It
-        does **not** affect the current connect path.
+        ``write_snxrc`` stores the best available session token as ``auth_id``
+        for the ``/SNX/ReLogin`` endpoint — preferring a CCC-compatible token
+        from ``/SNX/SNX`` (if the portal exposes it) over the raw
+        ``CPCVPN_SESSION_ID`` browser-session cookie.  The SNX binary still asks
+        for the password in the PTY (Phase 1 of reconnect), but the server should
+        accept the session without requesting a second OTP factor.
+
+        Note: Servers that require RADIUS MultiChallenge OTP for CCC auth cannot
+        be reached via this flow because the SNX binary does not support
+        MultiChallenge in its PTY interaction.  In that case ``/SNX/ReLogin``
+        always returns "Connection aborted" regardless of which token is used.
+        Use snx-rs (https://github.com/ancwrd1/snx-rs) for such gateways.
 
         Returns:
             Tuple ``(status, cached_otp)`` where:
@@ -919,6 +1127,7 @@ class SNXBackend:
             (``True`` is never returned; the full connect happens via SNX.)
         """
         from .portal_auth import PortalAuth
+        from .ccc_auth import CCCAuth
 
         login = (
             f"{profile.domain}\\{profile.username}"
@@ -929,13 +1138,66 @@ class SNXBackend:
         result = pa.authenticate(login, password, otp_callback=two_factor_callback)
 
         if result.success:
-            logger.info("Portal auth succeeded. Writing session to ~/.snxrc.")
-            pa.write_snxrc(result)
+            logger.info("Portal auth succeeded. Attempting CCC auth for active_key.")
+            # ── CCC auth: obtain a CCC-compatible active_key for /SNX/ReLogin ──
+            # The portal auth creates a *browser* session (CPCVPN_SESSION_ID) which
+            # /SNX/ReLogin rejects.  CCC auth (/clients/ endpoint) creates a native
+            # session token (active_key) that /SNX/ReLogin actually accepts.
+            # We try CCC immediately after portal auth — using the same credentials
+            # and the OTP that was just collected (cached_otp avoids a second prompt).
+            ccc = CCCAuth(server=profile.server, port=profile.ssl_port, verify_ssl=False)
+            # Use the realm extracted during portal GET /Login/Login.
+            # Required by CCC UserPass as :selectedRealm.
+            realm = result.realm
+            active_key = ccc.authenticate(
+                username=login,
+                password=password,
+                realm=realm,
+                otp_callback=two_factor_callback,
+                cached_otp=result.otp_used,
+                # Pass CPCVPN_OBSCURE_KEY as portal_session_id so the server
+                # can link this CCC request to the authenticated portal session.
+                portal_session_id=result.obscure_key or result.session_id,
+                # Forward portal cookies so the server can associate this CCC
+                # request with the authenticated portal session (CPCVPN_SESSION_ID,
+                # CPCVPN_OBSCURE_KEY, etc.).
+                portal_cookies=result.portal_cookies,
+            )
+            if active_key:
+                logger.info("CCC auth succeeded — writing active_key to ~/.snxrc.")
+                # Write active_key as auth_id, overriding the portal session cookie.
+                from .portal_auth import PortalAuthResult
+                ccc_result = PortalAuthResult(
+                    success=True,
+                    session_id=result.session_id,
+                    cookie_timeout=result.cookie_timeout,
+                    snx_launch_token=active_key,
+                )
+                pa.write_snxrc(ccc_result)
+                self._ccc_auth_ok = True
+            else:
+                logger.warning(
+                    "CCC auth did not return active_key — "
+                    "SNX reconnect mode (-r) will NOT be used since the session token "
+                    "from CPCVPN_OBSCURE_KEY is not accepted by /SNX/ReLogin on this server. "
+                    "Falling back to full SNX PTY auth (snx -u user, no -r). "
+                    "SNX will prompt for a fresh OTP."
+                )
+                # Do NOT write ~/.snxrc when CCC failed.  Writing CPCVPN_OBSCURE_KEY
+                # as auth_id causes SNX binary to include it in its HTTP authentication
+                # request even when launched without -r.  The server rejects this stale
+                # portal token with "Connection aborted" before SNX issues any OTP
+                # challenge.  Delete any existing ~/.snxrc so SNX performs fresh auth.
+                _clear_snxrc()
+                # _ccc_auth_ok remains False → _build_args() will omit -r
+
             self._portal_credentials_failed = False
+            self._portal_auth_ok = True
             if result.otp_used:
                 logger.debug(
-                    "Portal auth: OTP was collected in step 2; "
-                    "caching for SNX PTY to avoid second prompt."
+                    "Portal auth: OTP collected in step 2 (cached). "
+                    "Will be discarded if CCC auth failed (RADIUS OTPs are one-time-use). "
+                    "SNX PTY will prompt for a fresh OTP in that case."
                 )
             return None, result.otp_used  # Proceed to SNX PTY
 
@@ -1000,22 +1262,38 @@ class SNXBackend:
         """
         args: list[str] = ["-s", profile.server]
 
-        # Portal reconnect mode (opt-in via profile.portal_reconnect_mode):
-        # After a successful portal auth, ``write_snxrc`` stores the session in
-        # ``~/.snxrc`` as ``auth_id="..."``.  When ``portal_reconnect_mode`` is
-        # True we pass ``-r`` so SNX reads ``~/.snxrc`` and skips its own auth
-        # handshake entirely (no password prompt, no OTP prompt in PTY stage).
+        # Portal reconnect mode — only when CCC auth produced a valid active_key:
+        # ``write_snxrc`` stores the CCC active_key as ``auth_id`` in ``~/.snxrc``.
+        # We pass ``-u user -r`` so SNX reads that file and validates via /SNX/ReLogin.
         #
-        # IMPORTANT: This only works if the gateway's CP build uses
-        # ``CPCVPN_OBSCURE_KEY`` (VPN tunnel key) as ``auth_id`` — some builds
-        # only set ``CPCVPN_SESSION_ID`` (portal cookie) which SNX does NOT
-        # accept as ``auth_id``.  Default is False (safe fallback: normal
-        # password + OTP PTY flow).
-        if profile.portal_auth and getattr(profile, "portal_reconnect_mode", False):
-            logger.info(
-                "_build_args: portal_reconnect_mode=True → using SNX -r (reconnect) flag."
+        # When CCC auth failed (_ccc_auth_ok=False), -r is NOT safe to use because
+        # /SNX/ReLogin will reject CPCVPN_OBSCURE_KEY (only CCC active_key works).
+        # In that case we fall through to regular PTY auth (snx -u user, no -r)
+        # so SNX can authenticate itself — it will prompt for OTP in the PTY.
+        if profile.portal_auth and self._portal_auth_ok and self._ccc_auth_ok:
+            login = (
+                f"{profile.domain}\\{profile.username}"
+                if profile.domain
+                else profile.username
             )
-            return args + ["-r"]
+            logger.info(
+                "_build_args: CCC auth succeeded → using SNX -u %s -r (reconnect).",
+                login,
+            )
+            return args + ["-u", login, "-r"]
+        if profile.portal_auth and self._portal_auth_ok and not self._ccc_auth_ok:
+            # CCC auth failed — fall through to regular PTY auth below.
+            # SNX will handle full authentication including OTP interactively.
+            login = (
+                f"{profile.domain}\\{profile.username}"
+                if profile.domain
+                else profile.username
+            )
+            logger.info(
+                "_build_args: CCC auth failed → SNX -u %s without -r "
+                "(full PTY auth, server will request fresh OTP).",
+                login,
+            )
 
         # SNX requires EITHER -u <user> OR -c <certfile>, not both.
         if profile.certificate:
@@ -1214,3 +1492,7 @@ class SNXBackend:
                 callback(snapshot)
             except Exception:  # noqa: BLE001
                 logger.exception("Exception in status callback.")
+
+
+# Backward-compatibility alias — existing code that imports SNXBackend continues to work.
+SNXBackend = SNXBinaryBackend

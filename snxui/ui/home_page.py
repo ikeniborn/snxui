@@ -15,7 +15,8 @@ import threading
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from snxui.core import ProfileManager, CredentialStore, SNXBackend
+    from snxui.core import ProfileManager, CredentialStore
+    from snxui.core.vpn_backend import VPNBackend
     from snxui.core.types import ConnectionStatus, Profile, TwoFactorCallback
     from snxui.system import TrayManager
 
@@ -52,7 +53,7 @@ class HomePage:
         *,
         profile_manager: "ProfileManager",
         credential_store: "CredentialStore",
-        snx_backend: "SNXBackend",
+        snx_backend: "VPNBackend",
         tray_manager: "Optional[TrayManager]" = None,
     ) -> None:
         if not _GTK_AVAILABLE:
@@ -459,11 +460,27 @@ class HomePage:
         dialog.show(callback=_on_response, parent=parent)
 
     def _start_connect(self, profile: "Profile", password: str) -> None:
-        """Launch the SNX connect in a background thread."""
+        """Launch the VPN connect in a background thread."""
         if self._connecting:
             return
         self._connecting = True
         self._apply_connecting()
+
+        # Select the appropriate backend for this profile.
+        from snxui.core.vpn_backend import BackendFactory
+        try:
+            self._backend = BackendFactory.create(profile)
+        except RuntimeError as exc:
+            self._connecting = False
+            from snxui.core.types import ConnectionStatus, ConnectionState
+            GLib.idle_add(
+                self._apply_status,
+                ConnectionStatus(
+                    state=ConnectionState.ERROR,
+                    error_message=str(exc),
+                ),
+            )
+            return
 
         two_factor_callback = self._build_two_factor_callback(profile)
 
@@ -492,13 +509,17 @@ class HomePage:
                 # the ERROR status above, making the error message invisible.
             else:
                 # connect() returned without raising.  For the success path,
-                # schedule a refresh so the UI is in sync with the real tunsnx
+                # schedule a refresh so the UI is in sync with the real tunnel
                 # state.  For the failure path (success=False), connect() already
                 # dispatched an ERROR status via status_callback — a refresh here
                 # would again override it with DISCONNECTED.
                 if success:
                     GLib.idle_add(self._refresh_status)
-                elif profile.portal_auth and self._backend._portal_credentials_failed:
+                elif (
+                    profile.portal_auth
+                    and hasattr(self._backend, "_portal_credentials_failed")
+                    and self._backend._portal_credentials_failed
+                ):
                     # Portal auth rejected the credentials (wrong password).
                     # Delete the cached password so the next attempt doesn't
                     # silently re-use it, then re-show the PasswordDialog.

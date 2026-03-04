@@ -89,6 +89,11 @@ class Profile:
     tunnel_type: TunnelType = TunnelType.SSL
     esp_settings: Optional[str] = None  # e.g. "aes256-sha256" — IPSec mode only
     ike_settings: Optional[str] = None  # e.g. "aes256-sha256-modp2048" — IPSec mode only
+    # Backend selection (added in profile format v7)
+    backend: str = "auto"              # "auto", "snx_rs", "snx"
+    login_type: str = ""               # CCC login type (required for snx-rs)
+    transport_type: str = "auto"       # snx-rs transport: "auto", "ssl", "ipsec", "udp"
+    ignore_server_cert: bool = False   # snx-rs: skip TLS certificate verification
 
 
 @dataclass

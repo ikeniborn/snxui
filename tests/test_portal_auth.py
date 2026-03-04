@@ -612,14 +612,14 @@ class TestAuthenticate:
 
 
 class TestWriteSnxrc:
-    def test_writes_gateway_and_auth_id(self, tmp_path):
+    def test_writes_gateway_cookie_timeout(self, tmp_path):
+        """write_snxrc writes gateway and cookie_timeout correctly."""
         pa = PortalAuth(server="vpn.test", port=443)
         snxrc = tmp_path / ".snxrc"
 
         result = PortalAuthResult(
             success=True,
             session_id="SID123",
-            auth_id="AID456",
             cookie_timeout="3600",
         )
 
@@ -629,10 +629,10 @@ class TestWriteSnxrc:
         assert ok is True
         content = snxrc.read_text()
         assert 'gateway="vpn.test"' in content
-        assert 'auth_id="AID456"' in content
         assert 'cookie_timeout="3600"' in content
 
-    def test_uses_session_id_when_no_auth_id(self, tmp_path):
+    def test_uses_session_id_as_fallback_when_no_obscure_key(self, tmp_path):
+        """Falls back to CPCVPN_SESSION_ID when no snx_launch_token and no obscure_key."""
         pa = PortalAuth(server="vpn.test", port=443)
         snxrc = tmp_path / ".snxrc"
         result = PortalAuthResult(success=True, session_id="SID99")
@@ -643,6 +643,43 @@ class TestWriteSnxrc:
         assert ok is True
         content = snxrc.read_text()
         assert 'auth_id="SID99"' in content
+
+    def test_prefers_obscure_key_over_session_id(self, tmp_path):
+        """CPCVPN_OBSCURE_KEY takes priority over CPCVPN_SESSION_ID as auth_id."""
+        pa = PortalAuth(server="vpn.test", port=443)
+        snxrc = tmp_path / ".snxrc"
+        result = PortalAuthResult(
+            success=True,
+            session_id="BROWSER_SESSION_ID",
+            obscure_key="VPN_TUNNEL_KEY_abc123",
+        )
+
+        with patch("snxui.core.portal_auth._SNXRC_PATH", snxrc):
+            ok = pa.write_snxrc(result)
+
+        assert ok is True
+        content = snxrc.read_text()
+        assert 'auth_id="VPN_TUNNEL_KEY_abc123"' in content
+        assert "BROWSER_SESSION_ID" not in content
+
+    def test_prefers_snx_launch_token_over_session_id(self, tmp_path):
+        """snx_launch_token (from /SNX/SNX) takes priority over CPCVPN_SESSION_ID."""
+        pa = PortalAuth(server="vpn.test", port=443)
+        snxrc = tmp_path / ".snxrc"
+        result = PortalAuthResult(
+            success=True,
+            session_id="BROWSER_SESSION_COOKIE",
+            snx_launch_token="ccc_token_from_snx_page_abc123",
+        )
+
+        with patch("snxui.core.portal_auth._SNXRC_PATH", snxrc):
+            ok = pa.write_snxrc(result)
+
+        assert ok is True
+        content = snxrc.read_text()
+        # CCC-compatible token takes precedence over browser session cookie
+        assert 'auth_id="ccc_token_from_snx_page_abc123"' in content
+        assert "BROWSER_SESSION_COOKIE" not in content
 
     def test_no_cookie_timeout_omits_line(self, tmp_path):
         pa = PortalAuth(server="vpn.test", port=443)
@@ -1079,3 +1116,240 @@ class TestTruncatedLogging:
                 assert len(msg) < 2000, (
                     f"JS fetch debug log too large ({len(msg)} chars): {msg[:200]!r}..."
                 )
+
+
+# ---------------------------------------------------------------------------
+# MCForm params base64 decoding
+# ---------------------------------------------------------------------------
+
+
+class TestMcFormParamsDecoding:
+    """Verify base64 params decoding and snx_relogin flag logging."""
+
+    _MC_HTML = textwrap.dedent("""\
+        <html><body>
+        <form id="MCForm" action="/Login/MultiChallenge">
+        <input type="hidden" name="username" value="testuser">
+        <input type="hidden" name="cancelFlag" value="">
+        <input type="hidden" name="HeightData" value="">
+        <input type="hidden" name="params" value="{params_b64}">
+        <input type="hidden" name="password" value="">
+        <input type="text" name="pin" value="">
+        </form>
+        Additional authentication required.
+        </body></html>
+    """)
+
+    def _make_portal(self):
+        return PortalAuth(server="vpn.test", port=443, verify_ssl=False)
+
+    def _make_mc_html(self, params_plain: str) -> str:
+        import base64
+        b64 = base64.b64encode(params_plain.encode()).decode()
+        return self._MC_HTML.format(params_b64=b64)
+
+    def test_snx_relogin_zero_logged_as_warning(self, caplog):
+        """snx_relogin=0 in params must be logged at WARNING level.
+
+        The decoding happens in _post_credentials step=1 when the server
+        returns an MCForm OTP challenge response with a base64 params field.
+        """
+        import logging
+        import urllib.error
+
+        mc_html = self._make_mc_html("bLaunchSWS=0||snx_relogin=0")
+        pa = self._make_portal()
+        probe_exc = urllib.error.HTTPError(None, 403, "Forbidden", {}, None)
+
+        def fake_open(req, timeout=20):
+            # _post_credentials step=1 POSTs to /Login/Login → returns MCForm
+            if "/Login/Login" in req.full_url:
+                return _make_response(mc_html)
+            raise probe_exc
+
+        with caplog.at_level(logging.WARNING, logger="snxui.core.portal_auth"):
+            with patch.object(pa._opener, "open", side_effect=fake_open):
+                # step=1 with no form_url → POSTs to /Login/Login, gets MCForm back
+                pa._post_credentials(
+                    username="user", password="secret", realm="R",
+                    rsa_mod="", rsa_exp="", step=1,
+                )
+
+        warning_msgs = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "snx_relogin=0" in r.getMessage()
+        ]
+        assert warning_msgs, (
+            "Expected a WARNING log containing 'snx_relogin=0' but got none. "
+            f"All records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    def test_snx_relogin_one_logged_at_info(self, caplog):
+        """snx_relogin=1 in params must be logged at INFO level (positive signal)."""
+        import logging
+        import base64
+        import urllib.error
+
+        params_b64 = base64.b64encode(b"bLaunchSWS=1||snx_relogin=1").decode()
+        mc_html = textwrap.dedent(f"""\
+            <html><body>
+            <form id="MCForm" action="/Login/MultiChallenge">
+            <input type="hidden" name="username" value="u">
+            <input type="hidden" name="params" value="{params_b64}">
+            <input type="hidden" name="cancelFlag" value="">
+            <input type="hidden" name="HeightData" value="">
+            </form>
+            Additional authentication required.
+            </body></html>
+        """)
+
+        pa = self._make_portal()
+        probe_exc = urllib.error.HTTPError(None, 403, "Forbidden", {}, None)
+        call_count = [0]
+
+        def fake_open(req, timeout=20):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return _make_response(mc_html)
+            raise probe_exc
+
+        with caplog.at_level(logging.INFO, logger="snxui.core.portal_auth"):
+            with patch.object(pa._opener, "open", side_effect=fake_open):
+                pa._post_credentials(
+                    username="u", password="pass", realm="R",
+                    rsa_mod="", rsa_exp="", step=1,
+                )
+
+        info_msgs = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.INFO and "snx_relogin=1" in r.getMessage()
+        ]
+        assert info_msgs, (
+            "Expected INFO log 'snx_relogin=1' but none found. "
+            f"All records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CCC /clients/ endpoint probe
+# ---------------------------------------------------------------------------
+
+
+class TestCccEndpointProbe:
+    """Verify _fetch_snx_resources() probes /clients/ with CCC ClientHello."""
+
+    def _make_portal(self):
+        return PortalAuth(server="vpn.test", port=443, verify_ssl=False)
+
+    def test_probes_clients_endpoint(self):
+        """_fetch_snx_resources must POST to /clients/."""
+        import urllib.error
+
+        pa = self._make_portal()
+        probed_urls = []
+
+        def fake_open(req, timeout=5):
+            probed_urls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._fetch_snx_resources()
+
+        clients_calls = [u for u in probed_urls if "/clients/" in u]
+        assert clients_calls, (
+            f"/clients/ not probed. URLs accessed: {probed_urls}"
+        )
+
+    def test_returns_active_key_from_ccc_response(self):
+        """active_key from CCCserverResponse body must be returned."""
+        import urllib.error
+
+        ccc_body = (
+            "(CCCserverResponse"
+            " :ResponseHeader ( :id (1) :session_id (\"abc\") )"
+            " :ResponseData ( :active_key (deadbeefcafe12345678abcd1234567890ab) )"
+            ")"
+        )
+        pa = self._make_portal()
+
+        def fake_open(req, timeout=5):
+            if "/clients/" in req.full_url:
+                return _make_response(ccc_body)
+            # SNX binary endpoint probes (reauthentication.html etc.) → 403
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            token = pa._fetch_snx_resources()
+
+        assert token == "deadbeefcafe12345678abcd1234567890ab"
+
+    def test_404_from_clients_logs_not_available(self, caplog):
+        """HTTP 404 from /clients/ should log that CCC is not available."""
+        import logging
+        import urllib.error
+
+        pa = self._make_portal()
+
+        def fake_open(req, timeout=5):
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+        with caplog.at_level(logging.INFO, logger="snxui.core.portal_auth"):
+            with patch.object(pa._opener, "open", side_effect=fake_open):
+                token = pa._fetch_snx_resources()
+
+        assert token is None
+        not_available = [
+            r.getMessage() for r in caplog.records
+            if "not found" in r.getMessage().lower() or "not support" in r.getMessage().lower()
+        ]
+        assert not_available, (
+            f"Expected log about CCC not available. Records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+    def test_ccc_uses_snxclient_ua(self):
+        """CCC probe must use 'SNXClient' User-Agent, not the browser UA."""
+        import urllib.error
+
+        pa = self._make_portal()
+        ccc_ua = []
+
+        def fake_open(req, timeout=5):
+            if "/clients/" in req.full_url:
+                ccc_ua.append(req.get_header("User-agent"))
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._fetch_snx_resources()
+
+        assert ccc_ua, "/clients/ was not probed"
+        assert ccc_ua[0] == "SNXClient", (
+            f"Expected SNXClient UA for /clients/, got {ccc_ua[0]!r}"
+        )
+
+    def test_uses_correct_js_paths(self):
+        """JS probes must include all three known CSHELL JS paths."""
+        import urllib.error
+
+        pa = self._make_portal()
+        probed = []
+
+        def fake_open(req, timeout=5):
+            probed.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        with patch.object(pa._opener, "open", side_effect=fake_open):
+            pa._fetch_snx_resources()
+
+        assert any("/Portal/general.js" in u for u in probed), (
+            f"/Portal/general.js not probed. URLs: {probed}"
+        )
+        assert any("/SNX/CSHELL/cshell_utils.js" in u for u in probed), (
+            f"/SNX/CSHELL/cshell_utils.js not probed. URLs: {probed}"
+        )
+        assert any("/includes/js/cshell-common.js" in u for u in probed), (
+            f"/includes/js/cshell-common.js not probed. URLs: {probed}"
+        )
+        # Old wrong path (without /Portal/ prefix) must NOT be used
+        assert not any(u.endswith("/general.js") and "/Portal/" not in u for u in probed), (
+            f"Old path /general.js (without /Portal/) was used: {probed}"
+        )

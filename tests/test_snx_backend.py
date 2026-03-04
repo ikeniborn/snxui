@@ -1021,7 +1021,7 @@ class TestConnect2FA:
 
 
 class TestPortalAuthOtpCaching:
-    """Tests for OTP caching in _run_portal_auth() and connect() one-shot wrap."""
+    """Tests for _run_portal_auth() state tracking and reconnect flow."""
 
     def _patch_pexpect(self, child_mock):
         return patch("snxui.core.snx_backend.pexpect.spawn", return_value=child_mock)
@@ -1032,55 +1032,145 @@ class TestPortalAuthOtpCaching:
     def _patch_tunsnx(self, exists: bool = False):
         return patch.object(SNXBackend, "_tunsnx_exists", return_value=exists)
 
-    def test_run_portal_auth_returns_cached_otp_on_success(
+    def test_run_portal_auth_sets_portal_auth_ok_on_success(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """_run_portal_auth() returns (None, otp_value) when portal step 2 collected an OTP."""
+        """_run_portal_auth() sets _portal_auth_ok=True and returns (None, otp_used) on success."""
         from snxui.core.portal_auth import PortalAuthResult
 
         profile.portal_auth = True
-        otp_value = "123456"
         success_result = PortalAuthResult(
-            success=True, session_id="SID", otp_used=otp_value
+            success=True, session_id="SID", otp_used="123456"
         )
 
-        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
             instance = MockPortalAuth.return_value
             instance.authenticate.return_value = success_result
             instance.write_snxrc.return_value = True
+            # CCC auth not available in this test — returns None
+            MockCCCAuth.return_value.authenticate.return_value = None
 
             status, cached_otp = backend._run_portal_auth(
                 profile, "password", None, None
             )
 
         assert status is None, "None means proceed to SNX PTY"
-        assert cached_otp == otp_value
+        assert cached_otp == "123456", "OTP cached for SNX PTY one-shot callback"
+        assert backend._portal_auth_ok is True
 
-    def test_run_portal_auth_returns_none_otp_when_no_step2(
+    def test_run_portal_auth_writes_active_key_when_ccc_succeeds(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """_run_portal_auth() returns (None, None) when portal succeeded without OTP."""
+        """When CCC auth returns active_key, it must be written to snxrc as auth_id."""
         from snxui.core.portal_auth import PortalAuthResult
 
         profile.portal_auth = True
-        success_result = PortalAuthResult(success=True, session_id="SID", otp_used=None)
+        active_key = "cafebabe" * 8
+        success_result = PortalAuthResult(
+            success=True, session_id="BROWSER_SID", otp_used="111222",
+            realm="ssl_vpn_TEST",
+        )
 
-        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+        written_results = []
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
             instance = MockPortalAuth.return_value
             instance.authenticate.return_value = success_result
-            instance.write_snxrc.return_value = True
+            instance.write_snxrc.side_effect = lambda r: written_results.append(r)
+            # CCC auth succeeds
+            MockCCCAuth.return_value.authenticate.return_value = active_key
 
             status, cached_otp = backend._run_portal_auth(
                 profile, "password", None, None
             )
 
         assert status is None
-        assert cached_otp is None
+        assert backend._portal_auth_ok is True
+        # write_snxrc must have been called with a result containing the active_key
+        assert written_results, "write_snxrc must be called"
+        written = written_results[-1]
+        assert written.snx_launch_token == active_key, (
+            f"snx_launch_token should be the CCC active_key, got {written.snx_launch_token!r}"
+        )
+        # The browser session_id must NOT be used as auth_id when CCC provides active_key
+        assert written.session_id == "BROWSER_SID"  # kept for fallback info
 
-    def test_run_portal_auth_returns_false_on_failure(
+    def test_run_portal_auth_clears_snxrc_when_ccc_fails(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """_run_portal_auth() returns (False, None) when portal auth fails."""
+        """When CCC auth fails, ~/.snxrc must be CLEARED (not written with stale auth_id).
+
+        Writing CPCVPN_OBSCURE_KEY as auth_id into ~/.snxrc causes SNX binary to include
+        it in its HTTP authentication request even when launched without -r, resulting in
+        immediate "Connection aborted" before any OTP challenge is issued.  Instead,
+        _clear_snxrc() must be called so SNX performs a clean credential exchange.
+        """
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        success_result = PortalAuthResult(
+            success=True, session_id="BROWSER_SID", realm="ssl_vpn_R",
+        )
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc") as mock_clear:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = success_result
+            # CCC auth fails → None
+            MockCCCAuth.return_value.authenticate.return_value = None
+
+            status, _ = backend._run_portal_auth(profile, "password", None, None)
+
+        assert status is None
+        # _clear_snxrc() must be called — NOT write_snxrc() with stale auth_id
+        mock_clear.assert_called_once()
+        instance.write_snxrc.assert_not_called()
+
+    def test_run_portal_auth_passes_realm_to_ccc(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCCAuth.authenticate() must receive realm, cached_otp and portal_session_id."""
+        from snxui.core.portal_auth import PortalAuthResult
+
+        profile.portal_auth = True
+        realm = "ssl_vpn_UF-Username_RADIUS"
+        success_result = PortalAuthResult(
+            success=True, session_id="SESSID", otp_used="654321",
+            realm=realm, obscure_key="OBSCURE123",
+        )
+        ccc_calls = []
+
+        def fake_ccc_auth(username, password, realm, otp_callback, cached_otp,
+                          portal_session_id=None, portal_cookies=None):
+            ccc_calls.append({
+                "realm": realm,
+                "cached_otp": cached_otp,
+                "portal_session_id": portal_session_id,
+                "portal_cookies": portal_cookies,
+            })
+            return None
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
+            MockPortalAuth.return_value.authenticate.return_value = success_result
+            MockPortalAuth.return_value.write_snxrc.return_value = True
+            MockCCCAuth.return_value.authenticate.side_effect = fake_ccc_auth
+
+            backend._run_portal_auth(profile, "pw", None, None)
+
+        assert ccc_calls, "CCCAuth.authenticate() must be called"
+        assert ccc_calls[0]["realm"] == realm
+        assert ccc_calls[0]["cached_otp"] == "654321"  # OTP passed as cached
+        # CPCVPN_OBSCURE_KEY passed so server can link CCC request to portal session
+        assert ccc_calls[0]["portal_session_id"] == "OBSCURE123"
+
+    def test_run_portal_auth_sets_portal_auth_ok_false_on_failure(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """_run_portal_auth() does not set _portal_auth_ok on failure."""
         from snxui.core.portal_auth import PortalAuthResult
 
         profile.portal_auth = True
@@ -1098,11 +1188,12 @@ class TestPortalAuthOtpCaching:
 
         assert status is False
         assert cached_otp is None
+        assert backend._portal_auth_ok is False
 
-    def test_connect_portal_auth_caches_otp_no_dialog_for_pty(
+    def test_connect_portal_auth_uses_reconnect_no_otp_in_pty(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """When portal step 2 collected OTP, SNX PTY must NOT call two_factor_callback again."""
+        """After portal auth, SNX uses -r reconnect mode: password sent, OTP NOT needed."""
         from snxui.core.portal_auth import PortalAuthResult
 
         profile.portal_auth = True
@@ -1113,15 +1204,18 @@ class TestPortalAuthOtpCaching:
             success=True, session_id="SID", otp_used=otp_value
         )
 
-        # SNX PTY: password prompt (idx=0), then 2FA prompt (idx=1), then connected (idx=0)
-        child = _make_child_mock([0, 1, 0])
-        child.before = ""
+        # Reconnect mode PTY: Phase1=password prompt (idx=0), Phase2=connected (idx=0)
+        # No OTP prompt — reconnect mode uses portal session to skip 2FA.
+        child = _make_child_mock([0, 0])
+        child.before = "Session parameters:\n  Office Mode IP: 10.0.0.1\n"
         child.after = "SNX - Connected."
 
-        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth:
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
             instance = MockPortalAuth.return_value
             instance.authenticate.return_value = success_result
             instance.write_snxrc.return_value = True
+            MockCCCAuth.return_value.authenticate.return_value = None  # CCC not available
 
             with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
                 result = backend.connect(
@@ -1130,43 +1224,226 @@ class TestPortalAuthOtpCaching:
                 )
 
         assert result is True
-        # The original callback must NOT have been called for the PTY OTP prompt
-        # (the one-shot wrapper consumed the cached value instead).
+        # In reconnect mode, the portal session handles OTP — callback not invoked.
         original_cb.assert_not_called()
-        # SNX PTY must have received the cached OTP via sendline
-        child.sendline.assert_any_call(otp_value)
+        # SNX received the password (Phase 1), but NOT the OTP (server uses session).
+        child.sendline.assert_called_once_with("password")
+
+    def test_combined_auth_with_fresh_otp_in_portal_fallback_mode(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """portal_auth=True + combined_auth=True + CCC failed → fresh OTP via dialog.
+
+        When portal auth succeeds but CCC returns 502 (disabled for RADIUS realm),
+        SNX is launched without -r and ~/.snxrc is cleared so the stale portal
+        auth_id does not interfere.  combined_auth still fires but uses the ORIGINAL
+        two_factor_callback (not the stale cached portal OTP) so the user is prompted
+        for a fresh OTP via the 2FA dialog.
+        """
+        from snxui.core.portal_auth import PortalAuthResult
+        from snxui.core.snx_backend import _SNXRC_PATH
+
+        profile.portal_auth = True
+        profile.combined_auth = True  # server requires combined auth
+        fresh_otp = "654321"
+        otp_dialog_cb = MagicMock(return_value=fresh_otp)
+
+        success_result = PortalAuthResult(
+            success=True, session_id="SID", otp_used="111111"  # stale portal OTP
+        )
+
+        # PTY flow: idx=0 = password prompt, idx=0 = connected (combined auth sends once)
+        child = _make_child_mock([0, 0])
+        child.before = "Office Mode IP      : 10.1.2.3\n"
+        child.after = "SNX - Connected."
+
+        with patch("snxui.core.portal_auth.PortalAuth") as MockPortalAuth, \
+             patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc") as mock_clear_snxrc:
+            instance = MockPortalAuth.return_value
+            instance.authenticate.return_value = success_result
+            instance.write_snxrc.return_value = True
+            # CCC auth fails (returns None = no active_key) → _ccc_auth_ok stays False
+            MockCCCAuth.return_value.authenticate.return_value = None
+
+            with self._patch_pexpect(child), self._patch_tunsnx(), self._patch_monitor():
+                result = backend.connect(
+                    profile, "mypassword",
+                    two_factor_callback=otp_dialog_cb,
+                )
+
+        assert result is True
+        assert backend._portal_auth_ok is True
+        assert backend._ccc_auth_ok is False
+
+        # ~/.snxrc must be cleared to prevent stale auth_id from interfering
+        mock_clear_snxrc.assert_called_once()
+
+        # combined_auth must have requested a FRESH OTP via the dialog callback
+        # (NOT the stale portal OTP "111111")
+        otp_dialog_cb.assert_called_once()
+
+        # SNX received "mypassword<fresh_otp>" (combined auth), not plain password
+        sendline_calls = [c.args[0] for c in child.sendline.call_args_list]
+        assert f"mypassword{fresh_otp}" in sendline_calls
 
 
 class TestBuildArgsReconnectMode:
-    """Tests for portal_reconnect_mode -r flag in _build_args()."""
+    """Tests for _build_args() -r flag: only when portal_auth + _portal_auth_ok + _ccc_auth_ok."""
 
-    def test_portal_reconnect_mode_true_uses_r_flag(
+    def test_portal_auth_and_ccc_ok_uses_r_flag(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """When portal_auth=True and portal_reconnect_mode=True, args must include -r."""
+        """portal_auth=True + portal_auth_ok=True + ccc_auth_ok=True → -u user -r."""
         profile.portal_auth = True
-        profile.portal_reconnect_mode = True
+        backend._portal_auth_ok = True
+        backend._ccc_auth_ok = True
         args = backend._build_args(profile)
         assert "-r" in args
-        # -u must be absent when using -r (SNX reconnect mode uses ~/.snxrc, not -u)
-        assert "-u" not in args
+        assert "-u" in args
 
-    def test_portal_reconnect_mode_false_uses_normal_args(
+    def test_portal_auth_ok_false_no_r_flag(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """When portal_reconnect_mode=False (default), normal -u flag is used."""
+        """portal_auth_ok=False → no -r (portal auth not done)."""
         profile.portal_auth = True
-        profile.portal_reconnect_mode = False
+        backend._portal_auth_ok = False
+        backend._ccc_auth_ok = False
         args = backend._build_args(profile)
         assert "-r" not in args
         assert "-u" in args
 
-    def test_portal_reconnect_mode_only_applies_when_portal_auth_true(
+    def test_ccc_auth_failed_no_r_flag(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """portal_reconnect_mode has no effect when portal_auth=False."""
+        """portal_auth succeeded but CCC failed → no -r (OBSCURE_KEY rejected by /SNX/ReLogin)."""
+        profile.portal_auth = True
+        backend._portal_auth_ok = True
+        backend._ccc_auth_ok = False  # CCC returned 502 for all requests
+        args = backend._build_args(profile)
+        # -r must NOT be added: session token is not CCC active_key
+        assert "-r" not in args
+        assert "-u" in args
+
+    def test_portal_reconnect_mode_only_with_portal_auth_true(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """portal_auth=False → no -r even if ccc_auth_ok is somehow set."""
         profile.portal_auth = False
-        profile.portal_reconnect_mode = True
+        backend._portal_auth_ok = True
+        backend._ccc_auth_ok = True
         args = backend._build_args(profile)
         assert "-r" not in args
         assert "-u" in args
+
+
+class TestReconnectSession:
+    """Tests for _run_reconnect_session() — SNX -r PTY flow after portal auth."""
+
+    def _patch_monitor(self):
+        return patch.object(SNXBackend, "_start_monitor")
+
+    def _patch_tunsnx(self, exists: bool = False):
+        return patch.object(SNXBackend, "_tunsnx_exists", return_value=exists)
+
+    # Phase 1 indices: 0=password, 1=connected, 2=confirm, 3=already, 4=auth-fail,
+    #                   5=conn-fail, 6=EOF, 7=TIMEOUT
+    # Phase 2 indices: 0=connected, 1=2FA, 2=password, 3=auth-fail, 4=conn-fail,
+    #                   5=EOF, 6=TIMEOUT
+
+    def test_reconnect_password_then_connected(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Normal reconnect: password prompt → send password → Connected → True."""
+        # Phase1 idx=0 (password), Phase2 idx=0 (connected)
+        child = _make_child_mock([0, 0])
+        child.before = "Session parameters:\n  Office Mode IP: 10.0.0.1\n"
+        child.after = "SNX - Connected."
+        with self._patch_tunsnx(), self._patch_monitor():
+            result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is True
+        child.sendline.assert_called_once_with("testpass")
+
+    def test_reconnect_connected_directly(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: SNX connects without asking for password → True."""
+        # Phase1 idx=1 (connected directly, no password prompt)
+        child = _make_child_mock([1])
+        child.before = "Session parameters:\n"
+        child.after = "SNX - Connected."
+        with self._patch_tunsnx(), self._patch_monitor():
+            result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is True
+        child.sendline.assert_not_called()
+
+    def test_reconnect_gateway_confirm_then_connected(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: gateway cert confirm → auto-accept → password → Connected → True."""
+        # Phase1: idx=2 (confirm), idx=0 (password); Phase2: idx=0 (connected)
+        child = _make_child_mock([2, 0, 0])
+        child.before = ""
+        child.after = ""
+        with self._patch_tunsnx(), self._patch_monitor():
+            result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is True
+        # First call sends "y" for cert confirm, second sends the password
+        assert child.sendline.call_args_list[0][0][0] == "y"
+        assert child.sendline.call_args_list[1][0][0] == "testpass"
+
+    def test_reconnect_already_connected(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: SNX reports already connected → True."""
+        # Phase1 idx=3 (_RE_ALREADY)
+        child = _make_child_mock([3])
+        child.before = ""
+        child.after = "SNX: already connected"
+        with self._patch_tunsnx(), self._patch_monitor():
+            result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is True
+
+    def test_reconnect_auth_failed_phase1(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: auth failed before password prompt → False."""
+        # Phase1 idx=4 (_RE_AUTH_FAILED)
+        child = _make_child_mock([4])
+        child.before = "Authentication failed"
+        child.after = ""
+        result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is False
+
+    def test_reconnect_eof_phase1(self, backend: SNXBackend, profile: Profile) -> None:
+        """Reconnect: SNX exits before password prompt → False."""
+        # Phase1 idx=6 (EOF)
+        child = _make_child_mock([6])
+        child.before = ""
+        child.after = ""
+        result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is False
+
+    def test_reconnect_otp_requested_phase2(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: server requests OTP after password (portal session invalid) → False."""
+        # Phase1 idx=0 (password prompt), Phase2 idx=1 (2FA/OTP prompt)
+        child = _make_child_mock([0, 1])
+        child.before = ""
+        child.after = "Enter OTP:"
+        result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is False
+        # password was sent, but OTP was not (no dialog shown)
+        child.sendline.assert_called_once_with("testpass")
+
+    def test_reconnect_auth_failed_phase2(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Reconnect: auth failed after password → False."""
+        # Phase1 idx=0 (password), Phase2 idx=3 (auth failed)
+        child = _make_child_mock([0, 3])
+        child.before = "Authentication failed"
+        child.after = ""
+        result = backend._run_reconnect_session(child, "testpass", profile, None)
+        assert result is False
