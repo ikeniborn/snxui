@@ -6,7 +6,7 @@
 <link rel="index" title="Index" href="../genindex.html"><link rel="search" title="Search" href="../search.html">
 
     <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
-        <title>Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary) - snxui Documentation</title>
+        <title>Трафик и скорость VPN в трее (tooltip + UI) - snxui Documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=d111a655" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=7bdb33bb" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -229,355 +229,178 @@
           </label>
         </div>
         <article role="main" id="furo-main-content">
-          <section id="pluggable-vpn-backend-snx-rs-snx-binary">
-<h1>Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)<a class="headerlink" href="#pluggable-vpn-backend-snx-rs-snx-binary" title="Link to this heading">¶</a></h1>
+          <section id="vpn-tooltip-ui">
+<h1>Трафик и скорость VPN в трее (tooltip + UI)<a class="headerlink" href="#vpn-tooltip-ui" title="Link to this heading">¶</a></h1>
 <section id="id1">
 <h2>Контекст<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h2>
-<p><strong>Почему сейчас</strong>: Накопленный опыт интеграции с <code class="docutils literal notranslate"><span class="pre">ug.vpn.rt.ru</span></code> выявил системные проблемы текущей архитектуры, которые нельзя решить локальными патчами:</p>
-<div class="table-wrapper colwidths-auto docutils container">
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Проблема</p></th>
-<th class="head"><p>Проявление</p></th>
-<th class="head"><p>Корень</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>Двойной OTP</p></td>
-<td><p>Пользователь вводит OTP дважды (портал + PTY)</p></td>
-<td><p>PTY-подход требует свой OTP после portal auth</p></td>
-</tr>
-<tr class="row-odd"><td><p>Низкая скорость</p></td>
-<td><p>Хуже, чем snx-rs или браузер</p></td>
-<td><p>snx binary поддерживает только SSL туннель</p></td>
-</tr>
-<tr class="row-even"><td><p>Хрупкость PTY</p></td>
-<td><p>Новая версия snx binary ломает подключение</p></td>
-<td><p>10+ regex на PTY вывод</p></td>
-</tr>
-<tr class="row-odd"><td><p>HTML scraping</p></td>
-<td><p>Portal auth регрессирует при апдейтах портала</p></td>
-<td><p>regex вместо DOM parser</p></td>
-</tr>
-<tr class="row-even"><td><p>Сложность</p></td>
-<td><p>1400 LOC snx_backend.py, 1300 LOC portal_auth.py</p></td>
-<td><p>3 auth протокола в одном файле</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p><strong>snx-rs</strong> (Rust, open source, работает на том же сервере) решает всё: CCC протокол нативно, IPSec/SSL туннели, единственный OTP через CCC MultiChallenge.</p>
-<p><strong>Цель</strong>: Pluggable backend архитектура — snx-rs как primary, /usr/bin/snx как fallback. Профиль выбирает backend.</p>
+<p>Пользователь хочет видеть входящий/исходящий трафик и скорость соединения рядом с иконкой трея. Основной способ отображения — tooltip при наведении на иконку. Дополнительно — мини-строка в главном окне.</p>
+<p>Сейчас <code class="docutils literal notranslate"><span class="pre">TrayManager.set_connected()</span></code> показывает только имя профиля. Никаких данных о трафике в коде нет. Монитор SNXBinaryBackend (<code class="docutils literal notranslate"><span class="pre">_monitor_connection</span></code>, 5s) только проверяет существование интерфейса и IP.</p>
 </section>
 <hr class="docutils" />
 <section id="id2">
-<h2>Архитектура<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────────────────────────────┐
-│  GTK4 UI (home_page, dialogs)           │
-│  ConnectionState, StatusCallback        │
-└─────────────┬───────────────────────────┘
-              │ VPNBackend (ABC)
-    ┌─────────┴──────────┐
-    │                    │
-┌───▼──────────┐  ┌──────▼──────────┐
-│ SNXRsBackend │  │ SNXBinaryBackend│
-│ (snxd/snxctl)│  │ (pexpect PTY)   │
-│ NEW          │  │ существующий код│
-└──────────────┘  └─────────────────┘
+<h2>Источник данных<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">/proc/net/dev</span></code> — встроенный в ядро Linux счётчик байт per-interface. Нет subprocess, нет sudo. Формат:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span> <span class="n">tunsnx</span><span class="p">:</span>  <span class="n">RX_BYTES</span> <span class="n">packets</span> <span class="n">errs</span> <span class="o">...</span> <span class="n">TX_BYTES</span> <span class="n">packets</span> <span class="n">errs</span> <span class="o">...</span>
 </pre></div>
 </div>
+<p>Поля: <code class="docutils literal notranslate"><span class="pre">[0]</span></code> = rx_bytes, <code class="docutils literal notranslate"><span class="pre">[8]</span></code> = tx_bytes. Читается через <code class="docutils literal notranslate"><span class="pre">open()</span></code> — ~0.1 мс.</p>
+<p>Интерфейс: <code class="docutils literal notranslate"><span class="pre">tunsnx</span></code> (SNX binary) или <code class="docutils literal notranslate"><span class="pre">tunsnx0</span></code> (snx-rs). <code class="docutils literal notranslate"><span class="pre">TrafficMonitor</span></code> сам находит нужный по наличию в <code class="docutils literal notranslate"><span class="pre">/proc/net/dev</span></code>.</p>
 </section>
 <hr class="docutils" />
 <section id="id3">
-<h2>Файлы: что создать / изменить / удалить<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h2>
+<h2>Архитектура<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>HomePage._apply_connected()
+    ├── TrafficMonitor.start(iface)      # GLib.timeout_add(3000, _tick)
+    │       └── каждые 3s: читает /proc/net/dev → вычисляет скорость
+    │           → callback(rx_bps, tx_bps, rx_total, tx_total)
+    │               → TrayManager.set_connected(True, name, rx_bps, tx_bps, ...)
+    │               → HomePage._speed_label обновляется
+    └── (существующий путь через GLib.idle_add остаётся без изменений)
+
+HomePage._apply_disconnected/_apply_error()
+    └── TrafficMonitor.stop()            # отменяет GLib timer
+</pre></div>
+</div>
+<p><strong>Почему <code class="docutils literal notranslate"><span class="pre">GLib.timeout_add</span></code> а не thread?</strong> Таймер GLib работает в GTK main thread. Не нужен lock, не нужен Event. D-Bus обновление tooltip тоже выполняется в glib mainloop. Идеальное совпадение.</p>
+<p><strong>Почему не в <code class="docutils literal notranslate"><span class="pre">ConnectionStatus</span></code>?</strong> <code class="docutils literal notranslate"><span class="pre">ConnectionStatus</span></code> — одноразовый snapshot события. Трафик меняется непрерывно — для него нужен отдельный цикл обновлений.</p>
+</section>
+<hr class="docutils" />
+<section id="tooltip">
+<h2>Формат tooltip (результат)<a class="headerlink" href="#tooltip" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>SNX VPN — Подключено
+Профиль: Work VPN
+↓ 2.4 MB/s   ↑ 320 KB/s
+Получено: 145 MB · Отправлено: 23 MB
+</pre></div>
+</div>
+<p><em>(Если данные ещё не получены — только имя профиля)</em></p>
+</section>
+<hr class="docutils" />
 <section id="id4">
-<h3>Новые файлы<a class="headerlink" href="#id4" title="Link to this heading">¶</a></h3>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/vpn_backend.py</span></code></strong> (~80 LOC)</p>
-<ul class="simple">
-<li><p>ABC <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> с методами <code class="docutils literal notranslate"><span class="pre">connect()</span></code>, <code class="docutils literal notranslate"><span class="pre">disconnect()</span></code>, <code class="docutils literal notranslate"><span class="pre">state</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">BackendFactory.create(profile)</span></code> — выбор backend по <code class="docutils literal notranslate"><span class="pre">profile.backend</span></code> и доступности</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">detect_snx_rs()</span></code> — <code class="docutils literal notranslate"><span class="pre">shutil.which(&quot;snxd&quot;)</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">detect_snx_binary()</span></code> — <code class="docutils literal notranslate"><span class="pre">shutil.which(&quot;snx&quot;)</span></code></p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_rs_backend.py</span></code></strong> (~350 LOC)</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">SNXRsBackend(VPNBackend)</span></code> — интеграция со snx-rs</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">_write_config(profile,</span> <span class="pre">password)</span></code> → <code class="docutils literal notranslate"><span class="pre">~/.config/snx-rs/snx-rs.conf</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">_ensure_daemon()</span></code> — запустить snxd через privilege_handler если не запущен</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">connect(profile,</span> <span class="pre">password,</span> <span class="pre">status_cb,</span> <span class="pre">two_factor_cb)</span></code>:</p>
+<h2>Файлы<a class="headerlink" href="#id4" title="Link to this heading">¶</a></h2>
+<section id="create-snxui-system-traffic-monitor-py-90-loc">
+<h3>CREATE <code class="docutils literal notranslate"><span class="pre">snxui/system/traffic_monitor.py</span></code> (~90 LOC)<a class="headerlink" href="#create-snxui-system-traffic-monitor-py-90-loc" title="Link to this heading">¶</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">TrafficMonitor</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">callback</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="kc">None</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iface</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;tunsnx&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>   <span class="c1"># GLib.timeout_add(3000, _tick)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>                            <span class="c1"># GLib.source_remove(_timer_id)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_tick</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span>                          <span class="c1"># True=continue, False=stop</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_read_iface_bytes</span><span class="p">(</span><span class="n">iface</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span>  <span class="c1"># /proc/net/dev parser</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">format_speed</span><span class="p">(</span><span class="n">bps</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span>                              <span class="c1"># &quot;2.4 MB/s&quot;, &quot;320 KB/s&quot;</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">format_bytes</span><span class="p">(</span><span class="n">total</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span>                              <span class="c1"># &quot;145 MB&quot;, &quot;1.2 GB&quot;</span>
+</pre></div>
+</div>
+<p>Логика <code class="docutils literal notranslate"><span class="pre">_tick</span></code>:</p>
 <ol class="arabic simple">
-<li><p>Записать конфиг</p></li>
-<li><p>Поднять snxd daemon</p></li>
-<li><p>Если нужен OTP → <code class="docutils literal notranslate"><span class="pre">two_factor_cb</span></code> → получить код → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">connect</span> <span class="pre">--mfa-code</span> <span class="pre">CODE</span></code></p></li>
-<li><p>Иначе → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">connect</span></code></p></li>
-<li><p>Поллинг <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">status</span></code> каждые 2с до Connected</p></li>
+<li><p>Читает <code class="docutils literal notranslate"><span class="pre">/proc/net/dev</span></code> для заданного iface</p></li>
+<li><p>Если iface не найден — <code class="docutils literal notranslate"><span class="pre">stop()</span></code> (VPN отключился)</p></li>
+<li><p>Вычисляет <code class="docutils literal notranslate"><span class="pre">delta_bytes</span> <span class="pre">/</span> <span class="pre">delta_time</span></code> = скорость в bps</p></li>
+<li><p>Вызывает <code class="docutils literal notranslate"><span class="pre">callback(rx_bps,</span> <span class="pre">tx_bps,</span> <span class="pre">rx_total_from_start,</span> <span class="pre">tx_total_from_start)</span></code></p></li>
+<li><p>Возвращает <code class="docutils literal notranslate"><span class="pre">GLib.SOURCE_CONTINUE</span></code></p></li>
 </ol>
-</li>
-<li><p><code class="docutils literal notranslate"><span class="pre">disconnect()</span></code> → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">disconnect</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">_parse_status(output)</span></code> → <code class="docutils literal notranslate"><span class="pre">ConnectionState</span></code> + IP</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">fetch_login_types(server)</span></code> → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code> → список realm/login-type для UI</p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">tests/test_snx_rs_backend.py</span></code></strong> (~100 LOC)</p>
+</section>
+<section id="modify-snxui-system-tray-manager-py">
+<h3>MODIFY <code class="docutils literal notranslate"><span class="pre">snxui/system/tray_manager.py</span></code><a class="headerlink" href="#modify-snxui-system-tray-manager-py" title="Link to this heading">¶</a></h3>
+<p>Расширить <code class="docutils literal notranslate"><span class="pre">set_connected()</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">set_connected</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span> <span class="n">connected</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span> <span class="n">profile_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="p">,</span>
+    <span class="n">rx_bps</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">tx_bps</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">rx_total</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">tx_total</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">body</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;Профиль: </span><span class="si">{</span><span class="n">profile_name</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">if</span> <span class="n">profile_name</span> <span class="k">else</span> <span class="s2">&quot;VPN активен&quot;</span>
+    <span class="k">if</span> <span class="n">rx_bps</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">body</span> <span class="o">+=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">↓ </span><span class="si">{</span><span class="n">format_speed</span><span class="p">(</span><span class="n">rx_bps</span><span class="p">)</span><span class="si">}</span><span class="s2">   ↑ </span><span class="si">{</span><span class="n">format_speed</span><span class="p">(</span><span class="n">tx_bps</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+        <span class="n">body</span> <span class="o">+=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">Получено: </span><span class="si">{</span><span class="n">format_bytes</span><span class="p">(</span><span class="n">rx_total</span><span class="p">)</span><span class="si">}</span><span class="s2"> · Отправлено: </span><span class="si">{</span><span class="n">format_bytes</span><span class="p">(</span><span class="n">tx_total</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span>
+</pre></div>
+</div>
+<p>Импорт <code class="docutils literal notranslate"><span class="pre">format_speed</span></code>, <code class="docutils literal notranslate"><span class="pre">format_bytes</span></code> из <code class="docutils literal notranslate"><span class="pre">traffic_monitor</span></code>.</p>
+</section>
+<section id="modify-snxui-ui-home-page-py">
+<h3>MODIFY <code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code><a class="headerlink" href="#modify-snxui-ui-home-page-py" title="Link to this heading">¶</a></h3>
+<p><strong><code class="docutils literal notranslate"><span class="pre">__init__</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">self._traffic:</span> <span class="pre">Optional[TrafficMonitor]</span> <span class="pre">=</span> <span class="pre">None</span></code>, <code class="docutils literal notranslate"><span class="pre">self._last_profile_name:</span> <span class="pre">str</span> <span class="pre">=</span> <span class="pre">&quot;&quot;</span></code></p>
+<p><strong><code class="docutils literal notranslate"><span class="pre">_build_status_group()</span></code></strong>: после <code class="docutils literal notranslate"><span class="pre">self._info_label</span></code> добавить:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span> <span class="o">=</span> <span class="n">Gtk</span><span class="o">.</span><span class="n">Label</span><span class="p">()</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span><span class="o">.</span><span class="n">add_css_class</span><span class="p">(</span><span class="s2">&quot;caption&quot;</span><span class="p">)</span>   <span class="c1"># мелкий шрифт Adwaita</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span><span class="o">.</span><span class="n">set_visible</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">_apply_connected(status)</span></code></strong>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="bp">self</span><span class="o">.</span><span class="n">_last_profile_name</span> <span class="o">=</span> <span class="n">status</span><span class="o">.</span><span class="n">profile</span><span class="o">.</span><span class="n">name</span> <span class="ow">or</span> <span class="n">status</span><span class="o">.</span><span class="n">profile</span><span class="o">.</span><span class="n">server</span> <span class="k">if</span> <span class="n">status</span><span class="o">.</span><span class="n">profile</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span>
+<span class="n">iface</span> <span class="o">=</span> <span class="n">status</span><span class="o">.</span><span class="n">interface</span> <span class="ow">or</span> <span class="s2">&quot;tunsnx&quot;</span>
+<span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span><span class="p">:</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span> <span class="o">=</span> <span class="n">TrafficMonitor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_on_traffic_update</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">iface</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">_apply_disconnected()</span></code> и <code class="docutils literal notranslate"><span class="pre">_apply_error()</span></code></strong>: добавить stop трафика:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span><span class="p">:</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_traffic</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span><span class="o">.</span><span class="n">set_visible</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong><code class="docutils literal notranslate"><span class="pre">_on_traffic_update(rx_bps,</span> <span class="pre">tx_bps,</span> <span class="pre">rx_total,</span> <span class="pre">tx_total)</span></code></strong> (вызывается в main thread):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span><span class="o">.</span><span class="n">set_label</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;↓ </span><span class="si">{</span><span class="n">format_speed</span><span class="p">(</span><span class="n">rx_bps</span><span class="p">)</span><span class="si">}</span><span class="s2">  ↑ </span><span class="si">{</span><span class="n">format_speed</span><span class="p">(</span><span class="n">tx_bps</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">_speed_label</span><span class="o">.</span><span class="n">set_visible</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tray</span><span class="p">:</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_tray</span><span class="o">.</span><span class="n">set_connected</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_profile_name</span><span class="p">,</span> <span class="n">rx_bps</span><span class="p">,</span> <span class="n">tx_bps</span><span class="p">,</span> <span class="n">rx_total</span><span class="p">,</span> <span class="n">tx_total</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="create-tests-test-traffic-monitor-py-60-loc">
+<h3>CREATE <code class="docutils literal notranslate"><span class="pre">tests/test_traffic_monitor.py</span></code> (~60 LOC)<a class="headerlink" href="#create-tests-test-traffic-monitor-py-60-loc" title="Link to this heading">¶</a></h3>
 <ul class="simple">
-<li><p>Мокирование subprocess для snxd, snxctl</p></li>
-<li><p>Тесты: connect success, connect with MFA, disconnect, status parsing</p></li>
+<li><p>Тесты <code class="docutils literal notranslate"><span class="pre">format_speed()</span></code> и <code class="docutils literal notranslate"><span class="pre">format_bytes()</span></code> (граничные значения: B/s, KB/s, MB/s, GB)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">test_read_iface_bytes_found</span></code> — мокирует содержимое <code class="docutils literal notranslate"><span class="pre">/proc/net/dev</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">test_read_iface_bytes_not_found</span></code> — интерфейса нет, возвращает None</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">test_traffic_monitor_stop_without_start</span></code> — не падает</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">test_traffic_monitor_callback_called</span></code> — мокирует GLib и файл, проверяет callback</p></li>
 </ul>
 </section>
+</section>
+<hr class="docutils" />
 <section id="id5">
-<h3>Изменить существующие<a class="headerlink" href="#id5" title="Link to this heading">¶</a></h3>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/types.py</span></code></strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">Profile</span><span class="p">:</span>
-    <span class="c1"># Новые поля для snx-rs backend:</span>
-    <span class="n">backend</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;auto&quot;</span><span class="p">,</span> <span class="s2">&quot;snx_rs&quot;</span><span class="p">,</span> <span class="s2">&quot;snx&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span>
-    <span class="n">login_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>           <span class="c1"># CCC login type (snx-rs: required)</span>
-    <span class="n">transport_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span>   <span class="c1"># snx-rs: auto/kernel/udp/tcpt</span>
-    <span class="n">ignore_server_cert</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>  <span class="c1"># snx-rs TLS bypass</span>
-    <span class="c1"># tunnel_type уже есть (SSL/IPSec) ✓</span>
-</pre></div>
-</div>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/profile_manager.py</span></code></strong></p>
-<ul class="simple">
-<li><p>Версия формата v7 (v6 → v7): добавить <code class="docutils literal notranslate"><span class="pre">backend</span></code>, <code class="docutils literal notranslate"><span class="pre">login_type</span></code>, <code class="docutils literal notranslate"><span class="pre">transport_type</span></code>, <code class="docutils literal notranslate"><span class="pre">ignore_server_cert</span></code></p></li>
-<li><p>Миграция: v6 записи получают <code class="docutils literal notranslate"><span class="pre">backend=&quot;snx&quot;</span></code> (не “auto”) — сохраняют текущее поведение</p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_backend.py</span></code></strong></p>
-<ul class="simple">
-<li><p>Переименовать <code class="docutils literal notranslate"><span class="pre">SNXBackend</span></code> → <code class="docutils literal notranslate"><span class="pre">SNXBinaryBackend</span></code>, унаследовать от <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code></p></li>
-<li><p>Сохранить весь существующий код без изменений (обратная совместимость)</p></li>
-<li><p>Файл остаётся <code class="docutils literal notranslate"><span class="pre">snx_backend.py</span></code> для совместимости с импортами</p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></strong></p>
-<ul class="simple">
-<li><p>Заменить <code class="docutils literal notranslate"><span class="pre">SNXBackend()</span></code> на <code class="docutils literal notranslate"><span class="pre">BackendFactory.create(profile)</span></code> при connect</p></li>
-<li><p>Остальная логика неизменна (интерфейс <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> совпадает)</p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">snxui/ui/dialogs.py</span></code></strong> (ProfileDialog)</p>
-<ul class="simple">
-<li><p>Добавить группу “Backend” с:</p>
-<ul>
-<li><p>Selector: Auto / snx-rs / snx binary</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">login_type</span></code> поле (Adw.EntryRow) с кнопкой “Discover” (запускает <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">transport_type</span></code> ComboRow (auto/kernel/udp/tcpt)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ignore_server_cert</span></code> toggle</p></li>
-</ul>
-</li>
-<li><p>Скрыть <code class="docutils literal notranslate"><span class="pre">portal_auth</span></code>, <code class="docutils literal notranslate"><span class="pre">combined_auth</span></code>, <code class="docutils literal notranslate"><span class="pre">portal_reconnect_mode</span></code> когда backend=snx_rs
-(они специфичны для snx binary)</p></li>
-</ul>
-<p><strong><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></strong></p>
-<ul class="simple">
-<li><p>Добавить в [tool.poetry.extras] или README: “требует snx-rs (snxd, snxctl)”</p></li>
-<li><p>Добавить в <code class="docutils literal notranslate"><span class="pre">[project]</span></code> → <code class="docutils literal notranslate"><span class="pre">optional-dependencies</span></code> или системные требования</p></li>
-</ul>
-</section>
-</section>
-<hr class="docutils" />
-<section id="snx-rs-config-format">
-<h2>snx-rs config format<a class="headerlink" href="#snx-rs-config-format" title="Link to this heading">¶</a></h2>
-<div class="highlight-ini notranslate"><div class="highlight"><pre><span></span><span class="c1"># ~/.config/snx-rs/snx-rs.conf (генерируется snxui)</span>
-<span class="na">server-name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">ug.vpn.rt.ru</span>
-<span class="na">user-name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">i.y.tischenko</span>
-<span class="na">login-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">vpn_ssl_vpn_UF-Username_RADIUS</span>
-<span class="na">tunnel-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">ipsec</span>
-<span class="na">transport-type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">auto</span>
-<span class="na">ignore-server-cert</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">false</span>
-</pre></div>
-</div>
-<p><strong>Пароль</strong>: НЕ сохраняется в конфиге — передаётся через переменную окружения или stdin снxd при запуске. Keyring снxui уже хранит пароль — читаем через <code class="docutils literal notranslate"><span class="pre">CredentialStore</span></code>, передаём в snxd через безопасный канал (stdin, env var <code class="docutils literal notranslate"><span class="pre">SNX_PASSWORD</span></code>).</p>
-</section>
-<hr class="docutils" />
-<section id="mfa-flow-snx-rs-backend">
-<h2>MFA Flow (snx-rs backend)<a class="headerlink" href="#mfa-flow-snx-rs-backend" title="Link to this heading">¶</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>SNXRsBackend.connect()
-  │
-  ├─ profile.two_factor_method == TOTP + secret в keyring?
-  │   → auto_totp() → mfa_code = &quot;123456&quot;
-  │
-  ├─ profile.two_factor_method == RADIUS/CHALLENGE?
-  │   → GLib.idle_add → TwoFactorDialog (как сейчас)
-  │   → Event.wait(120) → mfa_code = &quot;654321&quot;
-  │
-  └─ two_factor_method == NONE?
-      → mfa_code = None (snx-rs попробует без OTP)
-  │
-  ↓
-snxctl connect [--mfa-code {mfa_code}]
-</pre></div>
-</div>
-<p><strong>Единственный OTP</strong> — не нужен второй ввод. CCC MultiChallenge обрабатывает snx-rs внутри.</p>
-</section>
-<hr class="docutils" />
-<section id="daemon-lifecycle">
-<h2>Daemon Lifecycle<a class="headerlink" href="#daemon-lifecycle" title="Link to this heading">¶</a></h2>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>snxui запуск:
-  snxctl status → Connected? → синхронизировать UI state
-
-Нажать Connect:
-  snxd запущен? нет → sudo snxd --daemon (через privilege_handler)
-  snxctl connect [--mfa-code ...]
-  poll snxctl status (2с) до Connected или ERROR
-
-Нажать Disconnect:
-  snxctl disconnect
-  (snxd остаётся запущенным для следующего connect)
-
-snxui завершение:
-  если Connected → показать диалог &quot;Отключить VPN?&quot; → snxctl disconnect
-  snxd оставить работать (пользователь может переподключиться)
-</pre></div>
-</div>
-</section>
-<hr class="docutils" />
-<section id="snx-rs">
-<h2>Что убирается из сложности (при использовании snx-rs)<a class="headerlink" href="#snx-rs" title="Link to this heading">¶</a></h2>
-<div class="table-wrapper colwidths-auto docutils container">
-<table class="docutils align-default">
-<thead>
-<tr class="row-odd"><th class="head"><p>Убирается</p></th>
-<th class="head"><p>LOC</p></th>
-<th class="head"><p>Причина</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>PTY pexpect автоматизация</p></td>
-<td><p>~600</p></td>
-<td><p>snx-rs не нужен PTY</p></td>
-</tr>
-<tr class="row-odd"><td><p>HTML scraping portal_auth.py</p></td>
-<td><p>~800</p></td>
-<td><p>CCC нативно в snx-rs</p></td>
-</tr>
-<tr class="row-even"><td><p>ccc_auth.py (используется snx-rs)</p></td>
-<td><p>~500</p></td>
-<td><p>snx-rs делает сам</p></td>
-</tr>
-<tr class="row-odd"><td><p>regex паттерны PTY вывода</p></td>
-<td><p>~50</p></td>
-<td><p>нет PTY</p></td>
-</tr>
-<tr class="row-even"><td><p>combined_auth логика</p></td>
-<td><p>~80</p></td>
-<td><p>не нужна</p></td>
-</tr>
-<tr class="row-odd"><td><p>portal_reconnect_mode</p></td>
-<td><p>~120</p></td>
-<td><p>не нужен</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Эти файлы <strong>остаются</strong> для snx binary fallback. Но для snx-rs backend — не используются.</p>
-</section>
-<hr class="docutils" />
-<section id="id6">
-<h2>Фазы реализации<a class="headerlink" href="#id6" title="Link to this heading">¶</a></h2>
-<section id="abc-1">
-<h3>Фаза 1: ABC + типы (1 день)<a class="headerlink" href="#abc-1" title="Link to this heading">¶</a></h3>
-<ol class="arabic simple">
-<li><p>Создать <code class="docutils literal notranslate"><span class="pre">vpn_backend.py</span></code> с <code class="docutils literal notranslate"><span class="pre">VPNBackend</span></code> ABC и <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code></p></li>
-<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">types.py</span></code>: новые поля Profile</p></li>
-<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">profile_manager.py</span></code>: миграция v6→v7</p></li>
-<li><p>Рефакторинг <code class="docutils literal notranslate"><span class="pre">SNXBackend</span></code> → <code class="docutils literal notranslate"><span class="pre">SNXBinaryBackend(VPNBackend)</span></code></p></li>
-<li><p>Обновить <code class="docutils literal notranslate"><span class="pre">home_page.py</span></code>: использовать <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code></p></li>
-<li><p>Обновить тесты</p></li>
-</ol>
-</section>
-<section id="snxrsbackend-2">
-<h3>Фаза 2: SNXRsBackend (2 дня)<a class="headerlink" href="#snxrsbackend-2" title="Link to this heading">¶</a></h3>
-<ol class="arabic simple">
-<li><p>Создать <code class="docutils literal notranslate"><span class="pre">snx_rs_backend.py</span></code></p></li>
-<li><p>Config generation, daemon management, status polling</p></li>
-<li><p>MFA integration (TwoFactorDialog → –mfa-code)</p></li>
-<li><p>Unit тесты с мокированием subprocess</p></li>
-</ol>
-</section>
-<section id="ui-1">
-<h3>Фаза 3: UI (1 день)<a class="headerlink" href="#ui-1" title="Link to this heading">¶</a></h3>
-<ol class="arabic simple">
-<li><p>ProfileDialog: backend selector + login_type + transport_type</p></li>
-<li><p>“Discover” кнопка → <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">info</span></code> → заполнить login_type</p></li>
-<li><p>Скрыть snx-binary-specific поля при backend=snx_rs</p></li>
-<li><p>Тесты диалога</p></li>
-</ol>
-</section>
-<section id="id7">
-<h3>Фаза 4: Интеграция и тестирование (1 день)<a class="headerlink" href="#id7" title="Link to this heading">¶</a></h3>
-<ol class="arabic simple">
-<li><p>End-to-end тест с реальным snx-rs (на сервере пользователя)</p></li>
-<li><p>Проверка fallback на snx binary</p></li>
-<li><p>Проверка auto-detect при разных комбинациях установленных бинарей</p></li>
-<li><p>Обновление README: инструкция по установке snx-rs</p></li>
-</ol>
-</section>
-</section>
-<hr class="docutils" />
-<section id="id8">
-<h2>Критические файлы<a class="headerlink" href="#id8" title="Link to this heading">¶</a></h2>
+<h2>Критические файлы<a class="headerlink" href="#id5" title="Link to this heading">¶</a></h2>
 <div class="table-wrapper colwidths-auto docutils container">
 <table class="docutils align-default">
 <thead>
 <tr class="row-odd"><th class="head"><p>Файл</p></th>
 <th class="head"><p>Действие</p></th>
-<th class="head"><p>Риск</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/vpn_backend.py</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/system/traffic_monitor.py</span></code></p></td>
 <td><p>CREATE</p></td>
-<td><p>Низкий</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_rs_backend.py</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/system/tray_manager.py</span></code></p></td>
+<td><p>MODIFY (set_connected signature + body)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></p></td>
+<td><p>MODIFY (speed_label + TrafficMonitor lifecycle)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tests/test_traffic_monitor.py</span></code></p></td>
 <td><p>CREATE</p></td>
-<td><p>Средний (subprocess, async)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/types.py</span></code></p></td>
-<td><p>MODIFY</p></td>
-<td><p>Низкий (additive)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/profile_manager.py</span></code></p></td>
-<td><p>MODIFY</p></td>
-<td><p>Средний (миграция данных)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/snx_backend.py</span></code></p></td>
-<td><p>MODIFY</p></td>
-<td><p>Низкий (rename class)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></p></td>
-<td><p>MODIFY</p></td>
-<td><p>Низкий (1 строка замены)</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snxui/ui/dialogs.py</span></code></p></td>
-<td><p>MODIFY</p></td>
-<td><p>Средний (новая UI группа)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>Существующие файлы <code class="docutils literal notranslate"><span class="pre">portal_auth.py</span></code>, <code class="docutils literal notranslate"><span class="pre">ccc_auth.py</span></code> — <strong>без изменений</strong> (используются SNXBinaryBackend).</p>
 </section>
 <hr class="docutils" />
-<section id="id9">
-<h2>Верификация<a class="headerlink" href="#id9" title="Link to this heading">¶</a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Тесты без snx-rs установленного</span>
-python3<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-q
-<span class="c1"># Ожидаем: 570+ passed (все старые + новые)</span>
+<section id="id6">
+<h2>Верификация<a class="headerlink" href="#id6" title="Link to this heading">¶</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># 1. Тесты</span>
+.venv/bin/python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/test_traffic_monitor.py<span class="w"> </span>-v
+.venv/bin/python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/<span class="w"> </span>-q<span class="w">   </span><span class="c1"># все 618+ должны пройти</span>
 
-<span class="c1"># 2. Тест auto-detect</span>
-python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;from snxui.core.vpn_backend import detect_snx_rs; print(detect_snx_rs())&quot;</span>
+<span class="c1"># 2. Проверить вручную (пока VPN подключён)</span>
+cat<span class="w"> </span>/proc/net/dev<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>tunsnx<span class="w">        </span><span class="c1"># видим RX/TX байты</span>
 
-<span class="c1"># 3. Тест config generation</span>
-python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
-<span class="s2">from snxui.core.snx_rs_backend import SNXRsBackend</span>
-<span class="s2">from snxui.core.types import Profile</span>
-<span class="s2">p = Profile(server=&#39;vpn.test&#39;, username=&#39;user&#39;, login_type=&#39;vpn_test&#39;)</span>
-<span class="s2">backend = SNXRsBackend()</span>
-<span class="s2">print(backend._build_config(p))</span>
-<span class="s2">&quot;</span>
-
-<span class="c1"># 4. Реальное подключение (требует snx-rs установленный)</span>
-<span class="c1"># Запустить snxui, создать профиль с backend=snx_rs, нажать Connect</span>
-<span class="c1"># Ожидаем: одиночный OTP, IPSec туннель, скорость выше</span>
+<span class="c1"># 3. Запуск приложения</span>
+snxui<span class="w"> </span>--debug<span class="w">   </span><span class="c1"># подключиться → навести на иконку трея</span>
+<span class="w">                </span><span class="c1"># ожидаем: через 3s в tooltip появляется скорость и объём</span>
+<span class="w">                </span><span class="c1"># ожидаем: в главном окне под IP-строкой — мини-лейбл со скоростью</span>
 </pre></div>
 </div>
 </section>
@@ -620,27 +443,20 @@ python3<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;
         <div class="toc-tree-container">
           <div class="toc-tree">
             <ul>
-<li><a class="reference internal" href="#">Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)</a><ul>
+<li><a class="reference internal" href="#">Трафик и скорость VPN в трее (tooltip + UI)</a><ul>
 <li><a class="reference internal" href="#id1">Контекст</a></li>
-<li><a class="reference internal" href="#id2">Архитектура</a></li>
-<li><a class="reference internal" href="#id3">Файлы: что создать / изменить / удалить</a><ul>
-<li><a class="reference internal" href="#id4">Новые файлы</a></li>
-<li><a class="reference internal" href="#id5">Изменить существующие</a></li>
+<li><a class="reference internal" href="#id2">Источник данных</a></li>
+<li><a class="reference internal" href="#id3">Архитектура</a></li>
+<li><a class="reference internal" href="#tooltip">Формат tooltip (результат)</a></li>
+<li><a class="reference internal" href="#id4">Файлы</a><ul>
+<li><a class="reference internal" href="#create-snxui-system-traffic-monitor-py-90-loc">CREATE <code class="docutils literal notranslate"><span class="pre">snxui/system/traffic_monitor.py</span></code> (~90 LOC)</a></li>
+<li><a class="reference internal" href="#modify-snxui-system-tray-manager-py">MODIFY <code class="docutils literal notranslate"><span class="pre">snxui/system/tray_manager.py</span></code></a></li>
+<li><a class="reference internal" href="#modify-snxui-ui-home-page-py">MODIFY <code class="docutils literal notranslate"><span class="pre">snxui/ui/home_page.py</span></code></a></li>
+<li><a class="reference internal" href="#create-tests-test-traffic-monitor-py-60-loc">CREATE <code class="docutils literal notranslate"><span class="pre">tests/test_traffic_monitor.py</span></code> (~60 LOC)</a></li>
 </ul>
 </li>
-<li><a class="reference internal" href="#snx-rs-config-format">snx-rs config format</a></li>
-<li><a class="reference internal" href="#mfa-flow-snx-rs-backend">MFA Flow (snx-rs backend)</a></li>
-<li><a class="reference internal" href="#daemon-lifecycle">Daemon Lifecycle</a></li>
-<li><a class="reference internal" href="#snx-rs">Что убирается из сложности (при использовании snx-rs)</a></li>
-<li><a class="reference internal" href="#id6">Фазы реализации</a><ul>
-<li><a class="reference internal" href="#abc-1">Фаза 1: ABC + типы (1 день)</a></li>
-<li><a class="reference internal" href="#snxrsbackend-2">Фаза 2: SNXRsBackend (2 дня)</a></li>
-<li><a class="reference internal" href="#ui-1">Фаза 3: UI (1 день)</a></li>
-<li><a class="reference internal" href="#id7">Фаза 4: Интеграция и тестирование (1 день)</a></li>
-</ul>
-</li>
-<li><a class="reference internal" href="#id8">Критические файлы</a></li>
-<li><a class="reference internal" href="#id9">Верификация</a></li>
+<li><a class="reference internal" href="#id5">Критические файлы</a></li>
+<li><a class="reference internal" href="#id6">Верификация</a></li>
 </ul>
 </li>
 </ul>

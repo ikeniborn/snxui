@@ -1,254 +1,171 @@
-# Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)
+# Трафик и скорость VPN в трее (tooltip + UI)
 
 ## Контекст
 
-**Почему сейчас**: Накопленный опыт интеграции с `ug.vpn.rt.ru` выявил системные проблемы текущей архитектуры, которые нельзя решить локальными патчами:
+Пользователь хочет видеть входящий/исходящий трафик и скорость соединения рядом с иконкой трея. Основной способ отображения — tooltip при наведении на иконку. Дополнительно — мини-строка в главном окне.
 
-| Проблема | Проявление | Корень |
-|----------|-----------|--------|
-| Двойной OTP | Пользователь вводит OTP дважды (портал + PTY) | PTY-подход требует свой OTP после portal auth |
-| Низкая скорость | Хуже, чем snx-rs или браузер | snx binary поддерживает только SSL туннель |
-| Хрупкость PTY | Новая версия snx binary ломает подключение | 10+ regex на PTY вывод |
-| HTML scraping | Portal auth регрессирует при апдейтах портала | regex вместо DOM parser |
-| Сложность | 1400 LOC snx_backend.py, 1300 LOC portal_auth.py | 3 auth протокола в одном файле |
+Сейчас `TrayManager.set_connected()` показывает только имя профиля. Никаких данных о трафике в коде нет. Монитор SNXBinaryBackend (`_monitor_connection`, 5s) только проверяет существование интерфейса и IP.
 
-**snx-rs** (Rust, open source, работает на том же сервере) решает всё: CCC протокол нативно, IPSec/SSL туннели, единственный OTP через CCC MultiChallenge.
+---
 
-**Цель**: Pluggable backend архитектура — snx-rs как primary, /usr/bin/snx как fallback. Профиль выбирает backend.
+## Источник данных
+
+`/proc/net/dev` — встроенный в ядро Linux счётчик байт per-interface. Нет subprocess, нет sudo. Формат:
+
+```
+ tunsnx:  RX_BYTES packets errs ... TX_BYTES packets errs ...
+```
+
+Поля: `[0]` = rx_bytes, `[8]` = tx_bytes. Читается через `open()` — ~0.1 мс.
+
+Интерфейс: `tunsnx` (SNX binary) или `tunsnx0` (snx-rs). `TrafficMonitor` сам находит нужный по наличию в `/proc/net/dev`.
 
 ---
 
 ## Архитектура
 
 ```
-┌─────────────────────────────────────────┐
-│  GTK4 UI (home_page, dialogs)           │
-│  ConnectionState, StatusCallback        │
-└─────────────┬───────────────────────────┘
-              │ VPNBackend (ABC)
-    ┌─────────┴──────────┐
-    │                    │
-┌───▼──────────┐  ┌──────▼──────────┐
-│ SNXRsBackend │  │ SNXBinaryBackend│
-│ (snxd/snxctl)│  │ (pexpect PTY)   │
-│ NEW          │  │ существующий код│
-└──────────────┘  └─────────────────┘
+HomePage._apply_connected()
+    ├── TrafficMonitor.start(iface)      # GLib.timeout_add(3000, _tick)
+    │       └── каждые 3s: читает /proc/net/dev → вычисляет скорость
+    │           → callback(rx_bps, tx_bps, rx_total, tx_total)
+    │               → TrayManager.set_connected(True, name, rx_bps, tx_bps, ...)
+    │               → HomePage._speed_label обновляется
+    └── (существующий путь через GLib.idle_add остаётся без изменений)
+
+HomePage._apply_disconnected/_apply_error()
+    └── TrafficMonitor.stop()            # отменяет GLib timer
 ```
+
+**Почему `GLib.timeout_add` а не thread?** Таймер GLib работает в GTK main thread. Не нужен lock, не нужен Event. D-Bus обновление tooltip тоже выполняется в glib mainloop. Идеальное совпадение.
+
+**Почему не в `ConnectionStatus`?** `ConnectionStatus` — одноразовый snapshot события. Трафик меняется непрерывно — для него нужен отдельный цикл обновлений.
 
 ---
 
-## Файлы: что создать / изменить / удалить
+## Формат tooltip (результат)
 
-### Новые файлы
+```
+SNX VPN — Подключено
+Профиль: Work VPN
+↓ 2.4 MB/s   ↑ 320 KB/s
+Получено: 145 MB · Отправлено: 23 MB
+```
 
-**`snxui/core/vpn_backend.py`** (~80 LOC)
-- ABC `VPNBackend` с методами `connect()`, `disconnect()`, `state`
-- `BackendFactory.create(profile)` — выбор backend по `profile.backend` и доступности
-- `detect_snx_rs()` — `shutil.which("snxd")`
-- `detect_snx_binary()` — `shutil.which("snx")`
+*(Если данные ещё не получены — только имя профиля)*
 
-**`snxui/core/snx_rs_backend.py`** (~350 LOC)
-- `SNXRsBackend(VPNBackend)` — интеграция со snx-rs
-- `_write_config(profile, password)` → `~/.config/snx-rs/snx-rs.conf`
-- `_ensure_daemon()` — запустить snxd через privilege_handler если не запущен
-- `connect(profile, password, status_cb, two_factor_cb)`:
-  1. Записать конфиг
-  2. Поднять snxd daemon
-  3. Если нужен OTP → `two_factor_cb` → получить код → `snxctl connect --mfa-code CODE`
-  4. Иначе → `snxctl connect`
-  5. Поллинг `snxctl status` каждые 2с до Connected
-- `disconnect()` → `snxctl disconnect`
-- `_parse_status(output)` → `ConnectionState` + IP
-- `fetch_login_types(server)` → `snxctl info` → список realm/login-type для UI
+---
 
-**`tests/test_snx_rs_backend.py`** (~100 LOC)
-- Мокирование subprocess для snxd, snxctl
-- Тесты: connect success, connect with MFA, disconnect, status parsing
+## Файлы
 
-### Изменить существующие
+### CREATE `snxui/system/traffic_monitor.py` (~90 LOC)
 
-**`snxui/core/types.py`**
 ```python
-@dataclass
-class Profile:
-    # Новые поля для snx-rs backend:
-    backend: Literal["auto", "snx_rs", "snx"] = "auto"
-    login_type: str = ""           # CCC login type (snx-rs: required)
-    transport_type: str = "auto"   # snx-rs: auto/kernel/udp/tcpt
-    ignore_server_cert: bool = False  # snx-rs TLS bypass
-    # tunnel_type уже есть (SSL/IPSec) ✓
+class TrafficMonitor:
+    def __init__(self, callback: Callable[[float, float, int, int], None]) -> None
+    def start(self, iface: str = "tunsnx") -> None   # GLib.timeout_add(3000, _tick)
+    def stop(self) -> None                            # GLib.source_remove(_timer_id)
+    def _tick(self) -> bool                          # True=continue, False=stop
+
+def _read_iface_bytes(iface: str) -> Optional[tuple[int, int]]  # /proc/net/dev parser
+def format_speed(bps: float) -> str                              # "2.4 MB/s", "320 KB/s"
+def format_bytes(total: int) -> str                              # "145 MB", "1.2 GB"
 ```
 
-**`snxui/core/profile_manager.py`**
-- Версия формата v7 (v6 → v7): добавить `backend`, `login_type`, `transport_type`, `ignore_server_cert`
-- Миграция: v6 записи получают `backend="snx"` (не "auto") — сохраняют текущее поведение
+Логика `_tick`:
+1. Читает `/proc/net/dev` для заданного iface
+2. Если iface не найден — `stop()` (VPN отключился)
+3. Вычисляет `delta_bytes / delta_time` = скорость в bps
+4. Вызывает `callback(rx_bps, tx_bps, rx_total_from_start, tx_total_from_start)`
+5. Возвращает `GLib.SOURCE_CONTINUE`
 
-**`snxui/core/snx_backend.py`**
-- Переименовать `SNXBackend` → `SNXBinaryBackend`, унаследовать от `VPNBackend`
-- Сохранить весь существующий код без изменений (обратная совместимость)
-- Файл остаётся `snx_backend.py` для совместимости с импортами
+### MODIFY `snxui/system/tray_manager.py`
 
-**`snxui/ui/home_page.py`**
-- Заменить `SNXBackend()` на `BackendFactory.create(profile)` при connect
-- Остальная логика неизменна (интерфейс `VPNBackend` совпадает)
-
-**`snxui/ui/dialogs.py`** (ProfileDialog)
-- Добавить группу "Backend" с:
-  - Selector: Auto / snx-rs / snx binary
-  - `login_type` поле (Adw.EntryRow) с кнопкой "Discover" (запускает `snxctl info`)
-  - `transport_type` ComboRow (auto/kernel/udp/tcpt)
-  - `ignore_server_cert` toggle
-- Скрыть `portal_auth`, `combined_auth`, `portal_reconnect_mode` когда backend=snx_rs
-  (они специфичны для snx binary)
-
-**`pyproject.toml`**
-- Добавить в [tool.poetry.extras] или README: "требует snx-rs (snxd, snxctl)"
-- Добавить в `[project]` → `optional-dependencies` или системные требования
-
----
-
-## snx-rs config format
-
-```ini
-# ~/.config/snx-rs/snx-rs.conf (генерируется snxui)
-server-name = ug.vpn.rt.ru
-user-name = i.y.tischenko
-login-type = vpn_ssl_vpn_UF-Username_RADIUS
-tunnel-type = ipsec
-transport-type = auto
-ignore-server-cert = false
+Расширить `set_connected()`:
+```python
+def set_connected(
+    self, connected: bool, profile_name: str = "",
+    rx_bps: Optional[float] = None, tx_bps: Optional[float] = None,
+    rx_total: Optional[int] = None, tx_total: Optional[int] = None,
+) -> None:
+    body = f"Профиль: {profile_name}" if profile_name else "VPN активен"
+    if rx_bps is not None:
+        body += f"\n↓ {format_speed(rx_bps)}   ↑ {format_speed(tx_bps)}"
+        body += f"\nПолучено: {format_bytes(rx_total)} · Отправлено: {format_bytes(tx_total)}"
 ```
 
-**Пароль**: НЕ сохраняется в конфиге — передаётся через переменную окружения или stdin снxd при запуске. Keyring снxui уже хранит пароль — читаем через `CredentialStore`, передаём в snxd через безопасный канал (stdin, env var `SNX_PASSWORD`).
+Импорт `format_speed`, `format_bytes` из `traffic_monitor`.
 
----
+### MODIFY `snxui/ui/home_page.py`
 
-## MFA Flow (snx-rs backend)
+**`__init__`**: `self._traffic: Optional[TrafficMonitor] = None`, `self._last_profile_name: str = ""`
 
-```
-SNXRsBackend.connect()
-  │
-  ├─ profile.two_factor_method == TOTP + secret в keyring?
-  │   → auto_totp() → mfa_code = "123456"
-  │
-  ├─ profile.two_factor_method == RADIUS/CHALLENGE?
-  │   → GLib.idle_add → TwoFactorDialog (как сейчас)
-  │   → Event.wait(120) → mfa_code = "654321"
-  │
-  └─ two_factor_method == NONE?
-      → mfa_code = None (snx-rs попробует без OTP)
-  │
-  ↓
-snxctl connect [--mfa-code {mfa_code}]
+**`_build_status_group()`**: после `self._info_label` добавить:
+```python
+self._speed_label = Gtk.Label()
+self._speed_label.add_css_class("caption")   # мелкий шрифт Adwaita
+self._speed_label.set_visible(False)
 ```
 
-**Единственный OTP** — не нужен второй ввод. CCC MultiChallenge обрабатывает snx-rs внутри.
-
----
-
-## Daemon Lifecycle
-
-```
-snxui запуск:
-  snxctl status → Connected? → синхронизировать UI state
-
-Нажать Connect:
-  snxd запущен? нет → sudo snxd --daemon (через privilege_handler)
-  snxctl connect [--mfa-code ...]
-  poll snxctl status (2с) до Connected или ERROR
-
-Нажать Disconnect:
-  snxctl disconnect
-  (snxd остаётся запущенным для следующего connect)
-
-snxui завершение:
-  если Connected → показать диалог "Отключить VPN?" → snxctl disconnect
-  snxd оставить работать (пользователь может переподключиться)
+**`_apply_connected(status)`**:
+```python
+self._last_profile_name = status.profile.name or status.profile.server if status.profile else ""
+iface = status.interface or "tunsnx"
+if self._traffic:
+    self._traffic.stop()
+self._traffic = TrafficMonitor(self._on_traffic_update)
+self._traffic.start(iface)
 ```
 
----
+**`_apply_disconnected()` и `_apply_error()`**: добавить stop трафика:
+```python
+if self._traffic:
+    self._traffic.stop()
+    self._traffic = None
+self._speed_label.set_visible(False)
+```
 
-## Что убирается из сложности (при использовании snx-rs)
+**`_on_traffic_update(rx_bps, tx_bps, rx_total, tx_total)`** (вызывается в main thread):
+```python
+self._speed_label.set_label(f"↓ {format_speed(rx_bps)}  ↑ {format_speed(tx_bps)}")
+self._speed_label.set_visible(True)
+if self._tray:
+    self._tray.set_connected(True, self._last_profile_name, rx_bps, tx_bps, rx_total, tx_total)
+```
 
-| Убирается | LOC | Причина |
-|-----------|-----|---------|
-| PTY pexpect автоматизация | ~600 | snx-rs не нужен PTY |
-| HTML scraping portal_auth.py | ~800 | CCC нативно в snx-rs |
-| ccc_auth.py (используется snx-rs) | ~500 | snx-rs делает сам |
-| regex паттерны PTY вывода | ~50 | нет PTY |
-| combined_auth логика | ~80 | не нужна |
-| portal_reconnect_mode | ~120 | не нужен |
+### CREATE `tests/test_traffic_monitor.py` (~60 LOC)
 
-Эти файлы **остаются** для snx binary fallback. Но для snx-rs backend — не используются.
-
----
-
-## Фазы реализации
-
-### Фаза 1: ABC + типы (1 день)
-1. Создать `vpn_backend.py` с `VPNBackend` ABC и `BackendFactory`
-2. Обновить `types.py`: новые поля Profile
-3. Обновить `profile_manager.py`: миграция v6→v7
-4. Рефакторинг `SNXBackend` → `SNXBinaryBackend(VPNBackend)`
-5. Обновить `home_page.py`: использовать `BackendFactory`
-6. Обновить тесты
-
-### Фаза 2: SNXRsBackend (2 дня)
-1. Создать `snx_rs_backend.py`
-2. Config generation, daemon management, status polling
-3. MFA integration (TwoFactorDialog → --mfa-code)
-4. Unit тесты с мокированием subprocess
-
-### Фаза 3: UI (1 день)
-1. ProfileDialog: backend selector + login_type + transport_type
-2. "Discover" кнопка → `snxctl info` → заполнить login_type
-3. Скрыть snx-binary-specific поля при backend=snx_rs
-4. Тесты диалога
-
-### Фаза 4: Интеграция и тестирование (1 день)
-1. End-to-end тест с реальным snx-rs (на сервере пользователя)
-2. Проверка fallback на snx binary
-3. Проверка auto-detect при разных комбинациях установленных бинарей
-4. Обновление README: инструкция по установке snx-rs
+- Тесты `format_speed()` и `format_bytes()` (граничные значения: B/s, KB/s, MB/s, GB)
+- `test_read_iface_bytes_found` — мокирует содержимое `/proc/net/dev`
+- `test_read_iface_bytes_not_found` — интерфейса нет, возвращает None
+- `test_traffic_monitor_stop_without_start` — не падает
+- `test_traffic_monitor_callback_called` — мокирует GLib и файл, проверяет callback
 
 ---
 
 ## Критические файлы
 
-| Файл | Действие | Риск |
-|------|----------|------|
-| `snxui/core/vpn_backend.py` | CREATE | Низкий |
-| `snxui/core/snx_rs_backend.py` | CREATE | Средний (subprocess, async) |
-| `snxui/core/types.py` | MODIFY | Низкий (additive) |
-| `snxui/core/profile_manager.py` | MODIFY | Средний (миграция данных) |
-| `snxui/core/snx_backend.py` | MODIFY | Низкий (rename class) |
-| `snxui/ui/home_page.py` | MODIFY | Низкий (1 строка замены) |
-| `snxui/ui/dialogs.py` | MODIFY | Средний (новая UI группа) |
-
-Существующие файлы `portal_auth.py`, `ccc_auth.py` — **без изменений** (используются SNXBinaryBackend).
+| Файл | Действие |
+|------|----------|
+| `snxui/system/traffic_monitor.py` | CREATE |
+| `snxui/system/tray_manager.py` | MODIFY (set_connected signature + body) |
+| `snxui/ui/home_page.py` | MODIFY (speed_label + TrafficMonitor lifecycle) |
+| `tests/test_traffic_monitor.py` | CREATE |
 
 ---
 
 ## Верификация
 
 ```bash
-# 1. Тесты без snx-rs установленного
-python3 -m pytest tests/ -q
-# Ожидаем: 570+ passed (все старые + новые)
+# 1. Тесты
+.venv/bin/python -m pytest tests/test_traffic_monitor.py -v
+.venv/bin/python -m pytest tests/ -q   # все 618+ должны пройти
 
-# 2. Тест auto-detect
-python3 -c "from snxui.core.vpn_backend import detect_snx_rs; print(detect_snx_rs())"
+# 2. Проверить вручную (пока VPN подключён)
+cat /proc/net/dev | grep tunsnx        # видим RX/TX байты
 
-# 3. Тест config generation
-python3 -c "
-from snxui.core.snx_rs_backend import SNXRsBackend
-from snxui.core.types import Profile
-p = Profile(server='vpn.test', username='user', login_type='vpn_test')
-backend = SNXRsBackend()
-print(backend._build_config(p))
-"
-
-# 4. Реальное подключение (требует snx-rs установленный)
-# Запустить snxui, создать профиль с backend=snx_rs, нажать Connect
-# Ожидаем: одиночный OTP, IPSec туннель, скорость выше
+# 3. Запуск приложения
+snxui --debug   # подключиться → навести на иконку трея
+                # ожидаем: через 3s в tooltip появляется скорость и объём
+                # ожидаем: в главном окне под IP-строкой — мини-лейбл со скоростью
 ```

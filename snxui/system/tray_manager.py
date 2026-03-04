@@ -314,12 +314,24 @@ class TrayManager:
         self._bus = None
         logger.debug("TrayManager: трей остановлен.")
 
-    def set_connected(self, connected: bool, profile_name: str = "") -> None:
+    def set_connected(
+        self,
+        connected: bool,
+        profile_name: str = "",
+        rx_bps: Optional[float] = None,
+        tx_bps: Optional[float] = None,
+        rx_total: Optional[int] = None,
+        tx_total: Optional[int] = None,
+    ) -> None:
         """Обновить иконку трея в соответствии с состоянием подключения.
 
         Args:
             connected: ``True`` — VPN подключен, ``False`` — отключён.
             profile_name: Имя активного профиля (для tooltip).
+            rx_bps: Входящая скорость в байт/с (или ``None`` если нет данных).
+            tx_bps: Исходящая скорость в байт/с (или ``None`` если нет данных).
+            rx_total: Суммарно принято байт с момента подключения.
+            tx_total: Суммарно отправлено байт с момента подключения.
         """
         self._connected = connected
         if self._item is None:
@@ -328,6 +340,14 @@ class TrayManager:
         if connected:
             title = "SNX VPN — Подключено"
             body = f"Профиль: {profile_name}" if profile_name else "VPN активен"
+            if rx_bps is not None and tx_bps is not None:
+                from snxui.system.traffic_monitor import format_speed, format_bytes
+                body += f"\n↓ {format_speed(rx_bps)}   ↑ {format_speed(tx_bps)}"
+                if rx_total is not None and tx_total is not None:
+                    body += (
+                        f"\nПолучено: {format_bytes(rx_total)}"
+                        f" · Отправлено: {format_bytes(tx_total)}"
+                    )
         else:
             title = "SNX VPN — Отключено"
             body = "Нажмите для подключения"

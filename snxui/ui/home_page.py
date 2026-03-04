@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from snxui.core.vpn_backend import VPNBackend
     from snxui.core.types import ConnectionStatus, Profile, TwoFactorCallback
     from snxui.system import TrayManager
+    from snxui.system.traffic_monitor import TrafficMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ class HomePage:
         self._tray = tray_manager
         self._profiles: list["Profile"] = []
         self._connecting = False
+        self._traffic: Optional["TrafficMonitor"] = None
+        self._last_profile_name: str = ""
 
         self._build_widget()
         self._refresh_profiles()
@@ -103,6 +106,12 @@ class HomePage:
         self._info_label.set_justify(Gtk.Justification.CENTER)
         self._info_label.set_visible(False)
 
+        self._speed_label = Gtk.Label(label="")
+        self._speed_label.add_css_class("caption")
+        self._speed_label.set_opacity(0.7)
+        self._speed_label.set_margin_bottom(4)
+        self._speed_label.set_visible(False)
+
         self._spinner = Gtk.Spinner()
         self._spinner.set_size_request(32, 32)
         self._spinner.set_margin_bottom(8)
@@ -123,6 +132,7 @@ class HomePage:
         status_box.append(self._status_icon)
         status_box.append(self._status_label)
         status_box.append(self._info_label)
+        status_box.append(self._speed_label)
         status_box.append(self._copy_error_btn)
         status_box.append(self._spinner)
         status_group.add(status_box)
@@ -236,9 +246,20 @@ class HomePage:
         self._spinner.set_visible(False)
         self._connect_btn.set_sensitive(True)
         self._connecting = False
+
+        self._last_profile_name = (
+            status.profile.name or status.profile.server if status.profile else ""
+        )
         if self._tray is not None:
-            profile_name = status.profile.name or status.profile.server if status.profile else ""
-            self._tray.set_connected(True, profile_name)
+            self._tray.set_connected(True, self._last_profile_name)
+
+        # Запустить монитор трафика
+        from snxui.system.traffic_monitor import TrafficMonitor
+        if self._traffic is not None:
+            self._traffic.stop()
+        self._traffic = TrafficMonitor(self._on_traffic_update)
+        iface = status.interface or "tunsnx"
+        self._traffic.start(iface)
 
     def _apply_connecting(self) -> None:
         """Update UI for the CONNECTING state."""
@@ -263,6 +284,11 @@ class HomePage:
 
     def _apply_error(self, status: "ConnectionStatus") -> None:
         """Update UI for the ERROR state."""
+        if self._traffic is not None:
+            self._traffic.stop()
+            self._traffic = None
+        self._speed_label.set_visible(False)
+
         self._status_icon.set_from_icon_name("network-error-symbolic")
         err = status.error_message or "Unknown error"
         self._current_error = err  # stored for clipboard copy
@@ -319,8 +345,34 @@ class HomePage:
             logger.debug("Could not clear saved password for profile %s.", profile.id)
         self._ask_password_then_connect(profile, error_hint=error_msg)
 
+    def _on_traffic_update(
+        self,
+        rx_bps: float,
+        tx_bps: float,
+        rx_total: int,
+        tx_total: int,
+    ) -> None:
+        """Обновить лейбл скорости и tooltip трея. Вызывается в main thread."""
+        from snxui.system.traffic_monitor import format_speed
+        self._speed_label.set_label(f"↓ {format_speed(rx_bps)}  ↑ {format_speed(tx_bps)}")
+        self._speed_label.set_visible(True)
+        if self._tray is not None:
+            self._tray.set_connected(
+                True,
+                self._last_profile_name,
+                rx_bps=rx_bps,
+                tx_bps=tx_bps,
+                rx_total=rx_total,
+                tx_total=tx_total,
+            )
+
     def _apply_disconnected(self) -> None:
         """Update UI for the DISCONNECTED state."""
+        if self._traffic is not None:
+            self._traffic.stop()
+            self._traffic = None
+        self._speed_label.set_visible(False)
+
         self._status_icon.set_from_icon_name("network-offline-symbolic")
         self._status_label.set_label("Disconnected")
         self._info_label.set_visible(False)
