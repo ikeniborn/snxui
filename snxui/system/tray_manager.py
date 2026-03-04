@@ -44,6 +44,8 @@ _SNI_PATH = "/StatusNotifierItem"
 _SNW_INTERFACE = "org.kde.StatusNotifierWatcher"
 _SNW_SERVICE = "org.kde.StatusNotifierWatcher"
 _SNW_PATH = "/StatusNotifierWatcher"
+_DBUSMENU_PATH = "/StatusNotifierItem/menu"
+_DBUSMENU_IFACE = "com.canonical.dbusmenu"
 
 # XDG иконки для состояний (только symbolic-варианты, которые есть в Adwaita)
 _ICON_CONNECTED = "network-vpn-symbolic"
@@ -58,6 +60,218 @@ class _StatusNotifierItemBase:
 
 
 if _DBUS_AVAILABLE:
+    class _DBusMenu(dbus.service.Object):  # type: ignore[misc]
+        """Минимальная реализация com.canonical.dbusmenu для контекстного меню трея.
+
+        Позволяет GNOME Shell (AppIndicator extension) и KDE Plasma показывать
+        контекстное меню при правом клике на иконке трея без использования
+        GTK PopoverMenu (который не работает без видимого родительского окна).
+        """
+
+        def __init__(
+            self,
+            bus_name: "dbus.service.BusName",
+            path: str,
+            action_callback: Optional[Callable[[str], None]],
+        ) -> None:
+            super().__init__(bus_name, path)
+            self._action_callback = action_callback
+            self._connected = False
+            self._revision = dbus.UInt32(1)
+
+        def update_connected(self, connected: bool) -> None:
+            """Обновить состояние пунктов меню (Connect/Disconnect enabled)."""
+            self._connected = connected
+            self._revision = dbus.UInt32(int(self._revision) + 1)
+            try:
+                self.LayoutUpdated(self._revision, dbus.Int32(0))
+            except Exception:
+                logger.debug("_DBusMenu.LayoutUpdated signal failed", exc_info=True)
+
+        # ------------------------------------------------------------------
+        # D-Bus Properties
+        # ------------------------------------------------------------------
+
+        @dbus.service.method(
+            dbus_interface="org.freedesktop.DBus.Properties",
+            in_signature="ss",
+            out_signature="v",
+        )
+        def Get(self, interface_name: str, property_name: str) -> object:
+            return self._all_props().get(property_name, dbus.String(""))
+
+        @dbus.service.method(
+            dbus_interface="org.freedesktop.DBus.Properties",
+            in_signature="s",
+            out_signature="a{sv}",
+        )
+        def GetAll(self, interface_name: str) -> dict:
+            return self._all_props()
+
+        def _all_props(self) -> dict:
+            return {
+                "Version": dbus.UInt32(3),
+                "TextDirection": dbus.String("ltr"),
+                "Status": dbus.String("normal"),
+                "IconThemePath": dbus.Array([], signature="s"),
+            }
+
+        # ------------------------------------------------------------------
+        # dbusmenu methods
+        # ------------------------------------------------------------------
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="iias",
+            out_signature="u(ia{sv}av)",
+        )
+        def GetLayout(
+            self, parentId: int, recursionDepth: int, propertyNames: list
+        ) -> tuple:
+            children = dbus.Array(signature="v")
+            for item_id, label, enabled, is_sep in self._menu_items():
+                if is_sep:
+                    props: dict = {
+                        "type": dbus.String("separator"),
+                        "enabled": dbus.Boolean(False),
+                        "visible": dbus.Boolean(True),
+                    }
+                else:
+                    props = {
+                        "label": dbus.String(label),
+                        "enabled": dbus.Boolean(enabled),
+                        "visible": dbus.Boolean(True),
+                    }
+                child = dbus.Struct(
+                    [
+                        dbus.Int32(item_id),
+                        dbus.Dictionary(props, signature="sv"),
+                        dbus.Array([], signature="v"),
+                    ],
+                    signature="ia{sv}av",
+                )
+                children.append(child)
+            root = dbus.Struct(
+                [
+                    dbus.Int32(0),
+                    dbus.Dictionary({}, signature="sv"),
+                    children,
+                ],
+                signature="ia{sv}av",
+            )
+            return self._revision, root
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="aias",
+            out_signature="a(ia{sv})",
+        )
+        def GetGroupProperties(self, ids: list, propertyNames: list) -> list:
+            items_map = {
+                item_id: (label, enabled, is_sep)
+                for item_id, label, enabled, is_sep in self._menu_items()
+            }
+            result = []
+            for item_id in ids:
+                if item_id in items_map:
+                    label, enabled, is_sep = items_map[item_id]
+                    if is_sep:
+                        props = dbus.Dictionary(
+                            {"type": dbus.String("separator")}, signature="sv"
+                        )
+                    else:
+                        props = dbus.Dictionary(
+                            {
+                                "label": dbus.String(label),
+                                "enabled": dbus.Boolean(enabled),
+                                "visible": dbus.Boolean(True),
+                            },
+                            signature="sv",
+                        )
+                    result.append(
+                        dbus.Struct(
+                            [dbus.Int32(item_id), props], signature="ia{sv}"
+                        )
+                    )
+            return dbus.Array(result, signature="(ia{sv})")
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="i",
+            out_signature="b",
+        )
+        def AboutToShow(self, id: int) -> bool:
+            return dbus.Boolean(False)
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="ai",
+            out_signature="",
+        )
+        def AboutToShowGroup(self, ids: list) -> None:
+            pass
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="isvu",
+            out_signature="",
+        )
+        def Event(
+            self, id: int, eventId: str, data: object, timestamp: int
+        ) -> None:
+            if eventId == "clicked" and self._action_callback:
+                action_map = {
+                    1: "connect",
+                    2: "disconnect",
+                    4: "show",
+                    6: "quit",
+                }
+                action = action_map.get(int(id))
+                if action:
+                    logger.debug("_DBusMenu.Event: id=%d action=%r", id, action)
+                    self._action_callback(action)
+
+        @dbus.service.method(
+            dbus_interface=_DBUSMENU_IFACE,
+            in_signature="a(isvu)",
+            out_signature="",
+        )
+        def EventGroup(self, events: list) -> None:
+            for event_id, event_type, data, timestamp in events:
+                self.Event(event_id, event_type, data, timestamp)
+
+        # ------------------------------------------------------------------
+        # Signals
+        # ------------------------------------------------------------------
+
+        @dbus.service.signal(dbus_interface=_DBUSMENU_IFACE, signature="ui")
+        def LayoutUpdated(self, revision: object, parent: int) -> None:  # type: ignore[empty-body]
+            pass
+
+        @dbus.service.signal(
+            dbus_interface=_DBUSMENU_IFACE,
+            signature="a(ia{sv})a(ia{sv})",
+        )
+        def ItemsPropertiesUpdated(
+            self, updated_props: list, removed_props: list
+        ) -> None:  # type: ignore[empty-body]
+            pass
+
+        # ------------------------------------------------------------------
+        # Helpers
+        # ------------------------------------------------------------------
+
+        def _menu_items(self) -> list:
+            """Вернуть текущий список пунктов меню: (id, label, enabled, is_sep)."""
+            return [
+                (1, "Connect", not self._connected, False),
+                (2, "Disconnect", self._connected, False),
+                (3, "", False, True),   # separator
+                (4, "Show Window", True, False),
+                (5, "", False, True),   # separator
+                (6, "Quit", True, False),
+            ]
+
     class StatusNotifierItem(dbus.service.Object):  # type: ignore[misc]
         """D-Bus объект StatusNotifierItem.
 
@@ -90,11 +304,17 @@ if _DBUS_AVAILABLE:
             self._tooltip_body = "Отключено"
             self._menu_callback = menu_callback
 
-            conn = dbus.service.BusName(
+            self._sni_bus_name = dbus.service.BusName(
                 f"org.kde.StatusNotifierItem-{self._app_id}",
                 bus=bus,
             )
-            super().__init__(conn, _SNI_PATH)
+            super().__init__(self._sni_bus_name, _SNI_PATH)
+
+            # Регистрируем dbusmenu на том же bus — GNOME AppIndicator
+            # и KDE используют его для показа правого клика.
+            self._dbusmenu = _DBusMenu(
+                self._sni_bus_name, _DBUSMENU_PATH, menu_callback
+            )
 
         # ------------------------------------------------------------------
         # D-Bus свойства (через метод Get/GetAll — упрощённая реализация)
@@ -120,7 +340,7 @@ if _DBUS_AVAILABLE:
                 "ToolTipBody": dbus.String(self._tooltip_body),
                 "ToolTipIconName": dbus.String(self._icon_name),
                 "IconThemePath": dbus.String(self._icon_theme_path),
-                "Menu": dbus.ObjectPath("/NO_DBUSMENU"),
+                "Menu": dbus.ObjectPath(_DBUSMENU_PATH),
                 "ItemIsMenu": dbus.Boolean(False),
                 "OverlayIconName": dbus.String(""),
                 "AttentionIconName": dbus.String(""),
@@ -144,14 +364,10 @@ if _DBUS_AVAILABLE:
 
         @dbus.service.method(dbus_interface=_SNI_INTERFACE)
         def Activate(self, x: int, y: int) -> None:
-            """Левый клик по иконке трея — показать контекстное меню.
-
-            GNOME с AppIndicator не вызывает ContextMenu, поэтому левый клик
-            тоже открывает наше GTK PopoverMenu.
-            """
+            """Левый клик по иконке трея — показать/поднять главное окно."""
             logger.debug("TrayItem.Activate called (%d, %d)", x, y)
             if self._menu_callback:
-                self._menu_callback("context_menu")
+                self._menu_callback("show")
 
         @dbus.service.method(dbus_interface=_SNI_INTERFACE)
         def SecondaryActivate(self, x: int, y: int) -> None:
@@ -220,7 +436,18 @@ if _DBUS_AVAILABLE:
                 except Exception:
                     logger.debug("NewStatus signal failed", exc_info=True)
 
+        def update_menu_connected(self, connected: bool) -> None:
+            """Обновить состояние пунктов dbusmenu (Connect/Disconnect)."""
+            self._dbusmenu.update_connected(connected)
+
 else:
+    class _DBusMenu:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def update_connected(self, *args, **kwargs) -> None:
+            pass
+
     # Заглушка если dbus недоступен
     class StatusNotifierItem(_StatusNotifierItemBase):  # type: ignore[no-redef]
         def __init__(self, *args, **kwargs) -> None:
@@ -230,6 +457,9 @@ else:
             pass
 
         def update_status(self, *args, **kwargs) -> None:
+            pass
+
+        def update_menu_connected(self, *args, **kwargs) -> None:
             pass
 
 
@@ -314,12 +544,24 @@ class TrayManager:
         self._bus = None
         logger.debug("TrayManager: трей остановлен.")
 
-    def set_connected(self, connected: bool, profile_name: str = "") -> None:
+    def set_connected(
+        self,
+        connected: bool,
+        profile_name: str = "",
+        rx_bps: Optional[float] = None,
+        tx_bps: Optional[float] = None,
+        rx_total: Optional[int] = None,
+        tx_total: Optional[int] = None,
+    ) -> None:
         """Обновить иконку трея в соответствии с состоянием подключения.
 
         Args:
             connected: ``True`` — VPN подключен, ``False`` — отключён.
             profile_name: Имя активного профиля (для tooltip).
+            rx_bps: Входящая скорость в байт/с (или ``None`` если нет данных).
+            tx_bps: Исходящая скорость в байт/с (или ``None`` если нет данных).
+            rx_total: Суммарно принято байт с момента подключения.
+            tx_total: Суммарно отправлено байт с момента подключения.
         """
         self._connected = connected
         if self._item is None:
@@ -328,12 +570,21 @@ class TrayManager:
         if connected:
             title = "SNX VPN — Подключено"
             body = f"Профиль: {profile_name}" if profile_name else "VPN активен"
+            if rx_bps is not None and tx_bps is not None:
+                from snxui.system.traffic_monitor import format_speed, format_bytes
+                body += f"\n↓ {format_speed(rx_bps)}   ↑ {format_speed(tx_bps)}"
+                if rx_total is not None and tx_total is not None:
+                    body += (
+                        f"\nПолучено: {format_bytes(rx_total)}"
+                        f" · Отправлено: {format_bytes(tx_total)}"
+                    )
         else:
             title = "SNX VPN — Отключено"
             body = "Нажмите для подключения"
 
         self._item.update_icon("snxui", title, body)
         self._item.update_status("Active")
+        self._item.update_menu_connected(connected)
         logger.debug("TrayManager: set_connected(%s, %r)", connected, profile_name)
 
     def set_connecting(self) -> None:
@@ -342,6 +593,7 @@ class TrayManager:
             return
         self._item.update_icon("snxui", "SNX VPN — Подключение…", "Установка соединения")
         self._item.update_status("Active")
+        self._item.update_menu_connected(False)
         logger.debug("TrayManager: set_connecting()")
 
     def set_error(self, error: str) -> None:

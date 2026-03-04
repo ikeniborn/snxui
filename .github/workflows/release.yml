@@ -153,14 +153,70 @@ jobs:
             ls -la "${PARENT_DIR}/"
             exit 1
           fi
-          cp "${DEB_FILE}" "snxui_${VERSION}_all.deb"
-          echo "DEB built: snxui_${VERSION}_all.deb ($(du -sh "snxui_${VERSION}_all.deb" | cut -f1))"
+          cp "${DEB_FILE}" "snxui_${VERSION}.deb"
+          echo "DEB built: snxui_${VERSION}.deb ($(du -sh "snxui_${VERSION}.deb" | cut -f1))"
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
         with:
           name: deb-package
-          path: "snxui_${{ needs.inject-versions.outputs.version }}_all.deb"
+          path: "snxui_${{ needs.inject-versions.outputs.version }}.deb"
+
+  build-rpm:
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:latest
+    needs: inject-versions
+    steps:
+      - name: Install RPM build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            git \
+            rpm-build \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
+            python3-devel
+
+      - uses: actions/checkout@v4
+
+      - name: Download versioned sources
+        uses: actions/download-artifact@v4
+        with:
+          name: versioned-sources
+
+      - name: Build RPM package
+        run: |
+          VERSION="${{ needs.inject-versions.outputs.version }}"
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          # Inject version into spec and add a dated changelog entry
+          DATE=$(date +"%a %b %d %Y")
+          sed "s/^Version:.*$/Version:        ${VERSION}/" \
+              packaging/rpm/snxui.spec > ~/rpmbuild/SPECS/snxui.spec
+          sed -i \
+              -e "s/\* Wed Mar 04 2026/* ${DATE}/" \
+              -e "s/ - 0\.0\.0-1$/ - ${VERSION}-1/" \
+              ~/rpmbuild/SPECS/snxui.spec
+          # Build binary-only RPM from the checked-out source tree
+          rpmbuild -bb \
+              --define "_topdir ${HOME}/rpmbuild" \
+              --define "srcdir $(pwd)" \
+              ~/rpmbuild/SPECS/snxui.spec
+          # Locate the built RPM and copy it with a dist-tag-free name
+          RPM_FILE=$(find ~/rpmbuild/RPMS/ -name "snxui-${VERSION}*.noarch.rpm" | head -1)
+          if [ -z "${RPM_FILE}" ]; then
+            echo "ERROR: RPM file not found after build"
+            find ~/rpmbuild/RPMS/ -ls
+            exit 1
+          fi
+          cp "${RPM_FILE}" "snxui-${VERSION}.noarch.rpm"
+          echo "RPM built: snxui-${VERSION}.noarch.rpm ($(du -sh "snxui-${VERSION}.noarch.rpm" | cut -f1))"
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: "snxui-${{ needs.inject-versions.outputs.version }}.noarch.rpm"
 
   build-appimage:
     runs-on: ubuntu-24.04
@@ -230,7 +286,7 @@ jobs:
 
   create-release:
     runs-on: ubuntu-22.04
-    needs: [inject-versions, build-deb, build-appimage]
+    needs: [inject-versions, build-deb, build-appimage, build-rpm]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -245,6 +301,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: appimage
+
+      - name: Download RPM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-package
 
       - name: Generate changelog from git log
         run: |
@@ -269,7 +330,10 @@ jobs:
       - name: Verify release artifacts
         run: |
           VERSION="${{ needs.inject-versions.outputs.version }}"
-          for f in "snxui_${VERSION}_all.deb" "snxui-${VERSION}-x86_64.AppImage"; do
+          for f in \
+              "snxui_${VERSION}.deb" \
+              "snxui-${VERSION}-x86_64.AppImage" \
+              "snxui-${VERSION}.noarch.rpm"; do
             if [ ! -f "${f}" ]; then
               echo "ERROR: Missing release artifact: ${f}"
               ls -la
@@ -286,5 +350,6 @@ jobs:
           gh release create "v${VERSION}" \
             --title "snxui v${VERSION}" \
             --notes-file /tmp/release-notes.md \
-            "snxui_${VERSION}_all.deb" \
-            "snxui-${VERSION}-x86_64.AppImage"
+            "snxui_${VERSION}.deb" \
+            "snxui-${VERSION}-x86_64.AppImage" \
+            "snxui-${VERSION}.noarch.rpm"

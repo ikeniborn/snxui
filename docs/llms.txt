@@ -10,5 +10,5 @@
 - [Data Flow — VPN Connect / Disconnect](/_sources/architecture/diagrams/data-flow-connect.md.txt)
 - [Data Flow — Application Startup](/_sources/architecture/diagrams/data-flow-startup.md.txt)
 - [SNX VPN — Component Dependency Graph](/_sources/architecture/diagrams/dependency-graph.md.txt)
-- [Рефакторинг: Pluggable VPN Backend (snx-rs + snx binary)](/_sources/plans/eager-hopping-cocke.md.txt)
+- [Трафик и скорость VPN в трее (tooltip + UI)](/_sources/plans/eager-hopping-cocke.md.txt)
 - [План реализации поддержки 2FA в snxui](/_sources/plans/golden-pondering-galaxy.md.txt)
