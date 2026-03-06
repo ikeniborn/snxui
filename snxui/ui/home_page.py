@@ -182,6 +182,19 @@ class HomePage:
         """Return the root GTK widget for this page."""
         return self._page
 
+    @property
+    def current_backend(self) -> "VPNBackend":
+        """Return the currently active VPN backend.
+
+        :meth:`_start_connect` replaces :attr:`_backend` with a new
+        :class:`~snxui.core.vpn_backend.VPNBackend` instance created by
+        :class:`~snxui.core.vpn_backend.BackendFactory` each time a
+        connection is initiated.  This property exposes the *current*
+        instance so callers (e.g. :class:`~snxui.app.SNXApplication`)
+        can reach the active backend without holding a stale reference.
+        """
+        return self._backend
+
     # ------------------------------------------------------------------
     # Profile list helpers
     # ------------------------------------------------------------------
@@ -271,6 +284,11 @@ class HomePage:
         self._traffic = TrafficMonitor(self._on_traffic_update)
         iface = status.interface or "tunsnx"
         self._traffic.start(iface)
+
+        if status.warning:
+            window = self.widget.get_root()
+            if window is not None and hasattr(window, "add_toast"):
+                window.add_toast(Adw.Toast(title=status.warning, timeout=15))
 
     def _apply_connecting(self) -> None:
         """Update UI for the CONNECTING state."""
@@ -451,6 +469,15 @@ class HomePage:
 
     def _do_disconnect(self) -> None:
         """Initiate disconnection in a background thread."""
+        # Stop the traffic monitor immediately — before spawning the
+        # background thread — so it does not keep polling a dead interface.
+        # On application shutdown the GTK main loop may not process
+        # GLib.idle_add callbacks, so we cannot rely on _apply_disconnected
+        # to stop the monitor.
+        if self._traffic is not None:
+            self._traffic.stop()
+            self._traffic = None
+
         self._apply_disconnecting()
 
         def _run() -> None:

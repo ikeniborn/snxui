@@ -19,7 +19,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from snxui.core import ProfileManager, CredentialStore, SNXBackend
+    from snxui.core import ProfileManager, CredentialStore
+    from snxui.core.vpn_backend import VPNBackend
     from snxui.system import TrayManager, AutostartManager
 
 logger = logging.getLogger(__name__)
@@ -56,9 +57,12 @@ class MainWindow:
         application: The :class:`Adw.Application` instance.
         profile_manager: Core profile CRUD service.
         credential_store: Keyring credential service.
-        snx_backend: VPN connection backend.
         tray_manager: System tray manager.
         autostart: Autostart manager.
+        snx_backend: Initial VPN backend (optional).  When *None* (the default),
+            :class:`~snxui.core.ssl_tunnel_backend.PythonSSLBackend` is used as
+            a placeholder until the first real ``Connect`` selects the backend
+            via :class:`~snxui.core.vpn_backend.BackendFactory`.
     """
 
     DEFAULT_WIDTH = 480
@@ -70,12 +74,16 @@ class MainWindow:
         application: object,
         profile_manager: "ProfileManager",
         credential_store: "CredentialStore",
-        snx_backend: "SNXBackend",
         tray_manager: "TrayManager",
         autostart: "AutostartManager",
+        snx_backend: "VPNBackend | None" = None,
     ) -> None:
         if not _GTK_AVAILABLE:
             raise ImportError("GTK4/Libadwaita is required for MainWindow.")
+
+        if snx_backend is None:
+            from snxui.core.ssl_tunnel_backend import PythonSSLBackend
+            snx_backend = PythonSSLBackend()
 
         self._app = application
         self._profile_manager = profile_manager
