@@ -542,3 +542,96 @@ class TestHomePageConnectDisconnect:
         mock_be.get_cached_status.assert_called_once()
         page.update_status.assert_called_once()
         assert page.update_status.call_args[0][0].state == ConnectionState.ERROR
+
+
+# ---------------------------------------------------------------------------
+# current_backend property tests
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentBackendProperty:
+    """Verify that current_backend always returns the active backend instance.
+
+    HomePage._start_connect() replaces self._backend via BackendFactory.create()
+    each time a new connection is initiated.  The current_backend property must
+    reflect this replacement so callers (e.g. SNXApplication._on_shutdown) can
+    always reach the active VPN backend without holding a stale reference.
+    """
+
+    def test_current_backend_returns_initial_backend(self) -> None:
+        """current_backend returns the backend passed at construction time."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        assert page.current_backend is mock_be
+
+    def test_current_backend_reflects_replacement(self) -> None:
+        """current_backend returns the new backend after _start_connect replaces it."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        new_backend = MagicMock(name="NewBackend")
+        page._backend = new_backend
+        assert page.current_backend is new_backend
+
+    def test_current_backend_is_not_stale_after_reconnect(self) -> None:
+        """Simulates two consecutive backend replacements; current_backend tracks the last one."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        first_backend = MagicMock(name="FirstBackend")
+        second_backend = MagicMock(name="SecondBackend")
+        page._backend = first_backend
+        assert page.current_backend is first_backend
+        page._backend = second_backend
+        assert page.current_backend is second_backend
+
+
+# ---------------------------------------------------------------------------
+# Traffic monitor teardown in _do_disconnect tests
+# ---------------------------------------------------------------------------
+
+
+class TestDisconnectTrafficMonitorStop:
+    """Verify _do_disconnect stops the traffic monitor before the background thread runs.
+
+    On application shutdown the GTK main loop may not process GLib.idle_add
+    callbacks, so we cannot rely on _apply_disconnected to stop the monitor.
+    Stopping the monitor at the start of _do_disconnect is the only reliable
+    path.
+    """
+
+    def test_do_disconnect_stops_traffic_monitor_before_thread(self) -> None:
+        """When a TrafficMonitor is active, _do_disconnect must stop and clear it."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_traffic = MagicMock(name="TrafficMonitor")
+        page._traffic = mock_traffic
+
+        # Prevent the background thread from running (we test pre-thread cleanup only).
+        with patch("snxui.ui.home_page.threading.Thread") as mock_thread_cls:
+            mock_thread_cls.return_value = MagicMock()
+            page._do_disconnect()
+
+        mock_traffic.stop.assert_called_once()
+        assert page._traffic is None, (
+            "_traffic must be set to None after stopping to prevent double-stop "
+            "in _apply_disconnected."
+        )
+
+    def test_do_disconnect_with_no_traffic_monitor_does_not_raise(self) -> None:
+        """_do_disconnect must be safe when no TrafficMonitor is active."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        assert page._traffic is None  # sanity: no monitor by default
+
+        with patch("snxui.ui.home_page.threading.Thread") as mock_thread_cls:
+            mock_thread_cls.return_value = MagicMock()
+            # Must not raise AttributeError or NoneType errors.
+            page._do_disconnect()
+
+    def test_apply_disconnected_skips_stop_when_already_cleared(self) -> None:
+        """_apply_disconnected must not double-stop a monitor cleared by _do_disconnect."""
+        page, _pm, _cs, mock_be = _make_home_page()
+        mock_traffic = MagicMock(name="TrafficMonitor")
+        page._traffic = mock_traffic
+
+        # Simulate _do_disconnect having already cleared the monitor.
+        page._traffic = None
+
+        # _apply_disconnected checks 'if self._traffic is not None' — should be a no-op.
+        page._apply_disconnected()
+
+        mock_traffic.stop.assert_not_called()
