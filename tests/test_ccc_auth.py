@@ -13,10 +13,16 @@ from snxui.core.ccc_auth import (
     _build_hello,
     _build_otp_response,
     _build_userpass,
+    _extract_sexp_block,
+    _parse_login_options,
     _redact_ccc,
     _sexp_escape,
     _sexp_int,
     _sexp_str,
+    _snx_deobfuscate,
+    _snx_obfuscate,
+    _split_sexp_items,
+    discover_login_options,
 )
 
 
@@ -60,6 +66,10 @@ def _hello_resp(rc: int = 0, session_id: str = "") -> str:
 
 
 def _auth_success_resp(active_key: str = "deadbeef" * 8, session_id: str = "sess1") -> str:
+    # active_key in the CCC wire format is XOR-obfuscated (ObfuscatedString).
+    # _extract_active_key() calls _snx_deobfuscate(), so the response must contain
+    # the obfuscated form; the caller's expected value is the plaintext.
+    obs_key = _snx_obfuscate(active_key)
     return (
         "(CCCserverResponse\n"
         f"\t:ResponseHeader (\n"
@@ -68,7 +78,7 @@ def _auth_success_resp(active_key: str = "deadbeef" * 8, session_id: str = "sess
         "\t\t:return_code (0)\n"
         "\t)\n"
         "\t:ResponseData (\n"
-        f'\t\t:active_key ({active_key})\n'
+        f'\t\t:active_key ({obs_key})\n'
         "\t)\n"
         ")\n"
     )
@@ -103,6 +113,62 @@ def _wrong_pw_resp() -> str:
         "\t:ResponseData ()\n"
         ")\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# SNX obfuscation
+# ---------------------------------------------------------------------------
+
+
+class TestSnxObfuscate:
+    """_snx_obfuscate must match the Rust implementation in snx-rs/crates/snxcore/src/util.rs."""
+
+    def test_known_value_testuser(self):
+        # Verified against snx-rs test: obfuscate("testuser") == "36203a333d372a59"
+        assert _snx_obfuscate("testuser") == "36203a333d372a59"
+
+    def test_empty_string_is_empty_hex(self):
+        assert _snx_obfuscate("") == ""
+
+    def test_round_trip_not_plaintext(self):
+        # Obfuscated value must differ from the input
+        result = _snx_obfuscate("password123")
+        assert result != "password123"
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_length_doubles(self):
+        # Hex-encoding doubles byte length
+        assert len(_snx_obfuscate("abc")) == 6
+
+
+# ---------------------------------------------------------------------------
+# SNX deobfuscation
+# ---------------------------------------------------------------------------
+
+
+class TestSnxDeobfuscate:
+    """_snx_deobfuscate must be the exact inverse of _snx_obfuscate."""
+
+    def test_round_trip_testuser(self):
+        assert _snx_deobfuscate(_snx_obfuscate("testuser")) == "testuser"
+
+    def test_round_trip_password(self):
+        assert _snx_deobfuscate(_snx_obfuscate("s3cr3t!")) == "s3cr3t!"
+
+    def test_known_server_prompt(self):
+        # Observed in real server response from ug.vpn.rt.ru:
+        # :prompt (771c203726313a372e5d) → "password: "
+        assert _snx_deobfuscate("771c203726313a372e5d") == "password: "
+
+    def test_empty_hex_returns_empty_string(self):
+        assert _snx_deobfuscate("") == ""
+
+    def test_plain_text_returned_unchanged(self):
+        # Non-hex strings (plain-text prompts from older servers) pass through
+        assert _snx_deobfuscate("Enter OTP:") == "Enter OTP:"
+
+    def test_invalid_hex_returned_unchanged(self):
+        assert _snx_deobfuscate("gg") == "gg"
 
 
 # ---------------------------------------------------------------------------
@@ -147,27 +213,34 @@ class TestSexpEscape:
 
 
 class TestBuilderEscaping:
-    """Verify builders escape special chars to prevent S-expression injection."""
+    """Verify builders obfuscate credentials and escape special chars in realm/session_id."""
 
-    def test_userpass_escapes_password_quote(self):
+    def test_userpass_username_is_obfuscated(self):
+        body = _build_userpass("s", "r", "alice", "pw")
+        # username must appear as obfuscated hex, NOT plaintext
+        assert f':username ("{_snx_obfuscate("alice")}")' in body
+        assert ':username ("alice")' not in body
+
+    def test_userpass_password_is_obfuscated(self):
         body = _build_userpass("s", "r", "u", 'pass"word')
-        assert ':password ("pass\\"word")' in body
-
-    def test_userpass_escapes_username_quote(self):
-        body = _build_userpass("s", "r", 'user"name', "pw")
-        assert ':username ("user\\"name")' in body
+        obs = _snx_obfuscate('pass"word')
+        # password is hex-obfuscated — no raw quote injection possible
+        assert f':password ("{obs}")' in body
+        assert '"pass"word"' not in body
 
     def test_userpass_escapes_realm_quote(self):
         body = _build_userpass("s", 're"alm', "u", "pw")
-        assert ':selected_login_option ("re\\"alm")' in body
+        assert ':selectedLoginOption ("re\\"alm")' in body
 
-    def test_otp_escapes_quote(self):
-        body = _build_otp_response("s", '12"34')
-        assert ':user_input ("12\\"34")' in body
+    def test_otp_is_obfuscated(self):
+        body = _build_otp_response("s", "123456")
+        assert f':user_input ("{_snx_obfuscate("123456")}")' in body
+        assert ':user_input ("123456")' not in body
 
-    def test_hello_escapes_realm_quote(self):
-        body = _build_hello('re"alm')
-        assert ':selected_realm_id ("re\\"alm")' in body
+    def test_hello_contains_client_info_block(self):
+        body = _build_hello()
+        assert ":client_info (" in body
+        assert ":client_type (TRAC)" in body
 
 
 class TestSexpStr:
@@ -223,41 +296,53 @@ class TestBuildHello:
     def test_type_is_client_hello(self):
         assert ":type (ClientHello)" in _build_hello()
 
-    def test_session_id_empty_quoted(self):
-        assert ':session_id ("")' in _build_hello()
+    def test_session_id_absent_when_empty(self):
+        # When session_id is empty, field must NOT appear (snx-rs sends session_id: None)
+        assert "session_id" not in _build_hello()
 
     def test_session_id_portal_key_included(self):
         h = _build_hello(session_id="abc123portal")
         assert ':session_id ("abc123portal")' in h
 
-    def test_realm_included(self):
-        h = _build_hello("my_realm")
-        assert ':selected_realm_id ("my_realm")' in h
+    def test_client_info_nesting(self):
+        # RequestData must contain nested :client_info block (not flat fields)
+        h = _build_hello()
+        assert ":client_info (" in h
 
-    def test_empty_realm_empty_quoted(self):
-        h = _build_hello("")
-        assert ':selected_realm_id ("")' in h
+    def test_no_endpoint_os_in_hello(self):
+        # endpoint_os is NOT sent in ClientHello (snx-rs wire format)
+        assert "endpoint_os" not in _build_hello()
 
-    def test_endpoint_os_unix(self):
-        assert ":endpoint_os (unix)" in _build_hello()
+    def test_no_realm_in_hello(self):
+        # selected_realm_id is NOT sent in ClientHello; realm goes in UserPass only
+        assert "selected_realm_id" not in _build_hello()
+
+    def test_client_support_saml_true(self):
+        assert ":client_support_saml (true)" in _build_hello()
 
 
 class TestBuildUserpass:
-    def test_contains_username(self):
+    def test_contains_username_obfuscated(self):
         body = _build_userpass("sess", "realm", "alice", "pw")
-        assert ':username ("alice")' in body
+        assert f':username ("{_snx_obfuscate("alice")}")' in body
 
-    def test_contains_password(self):
+    def test_contains_password_obfuscated(self):
         body = _build_userpass("sess", "realm", "alice", "hunter2")
-        assert ':password ("hunter2")' in body
+        assert f':password ("{_snx_obfuscate("hunter2")}")' in body
+
+    def test_empty_credentials_produce_empty_hex(self):
+        # Empty string obfuscates to "" — portal resume sends empty-credential UserPass
+        body = _build_userpass("sess", "", "", "")
+        assert ':username ("")' in body
+        assert ':password ("")' in body
 
     def test_contains_realm(self):
         body = _build_userpass("sess", "my_realm", "u", "p")
-        assert ':selected_login_option ("my_realm")' in body
+        assert ':selectedLoginOption ("my_realm")' in body
 
     def test_realm_omitted_when_empty(self):
         body = _build_userpass("sess", "", "u", "p")
-        assert "selected_login_option" not in body
+        assert "selectedLoginOption" not in body
 
     def test_session_id_included(self):
         body = _build_userpass("abc123", "r", "u", "p")
@@ -279,11 +364,23 @@ class TestBuildUserpass:
         body = _build_userpass("s", "r", "u", "p")
         assert ":client_type (TRAC)" in body
 
+    def test_contains_client_logging_data(self):
+        body = _build_userpass("s", "r", "u", "p")
+        assert ":client_logging_data (" in body
+        assert ":os_name (Windows)" in body
+        assert ":device_id (" in body
+
+    def test_no_endpoint_os_in_userpass(self):
+        # endpoint_os is None in snx-rs AuthRequest — must not appear
+        body = _build_userpass("s", "r", "u", "p")
+        assert "endpoint_os" not in body
+
 
 class TestBuildOtpResponse:
-    def test_contains_user_input(self):
+    def test_contains_user_input_obfuscated(self):
         body = _build_otp_response("sess", "123456")
-        assert ':user_input ("123456")' in body
+        assert f':user_input ("{_snx_obfuscate("123456")}")' in body
+        assert ':user_input ("123456")' not in body
 
     def test_contains_auth_session_id(self):
         body = _build_otp_response("sess42", "123456")
@@ -387,7 +484,7 @@ class TestCccAuthenticate:
         )
         assert result == active_key
         assert otp_received  # callback was called
-        assert "Enter token:" in otp_received[0]
+        assert "Enter token" in otp_received[0]
 
     def test_otp_flow_with_cached_otp(self):
         """cached_otp must be tried first without calling otp_callback."""
@@ -535,13 +632,78 @@ class TestCccAuthenticate:
             "\t:ResponseData (\n"
             "\t\t:authn_status (done)\n"
             "\t\t:is_authenticated (true)\n"
-            f"\t\t:active_key ({active_key})\n"
+            f"\t\t:active_key ({_snx_obfuscate(active_key)})\n"
             "\t)\n"
             ")\n"
         )
         self._setup_open(ca, [_hello_resp(rc=502), rc600_success])
         result = ca.authenticate("u", "p", "r")
         assert result == active_key
+
+    def test_challenge_response_rc600_authn_done_returns_active_key(self):
+        """ChallengeResponse: rc=600 + authn_status=done is a success (observed in the wild).
+
+        ug.vpn.rt.ru returns rc=600 + authn_status=done + active_key in ChallengeResponse.
+        The old code only checked rc==0 and discarded the active_key with an error message.
+        """
+        ca = _ccc_auth()
+        active_key = "714f1c01" * 8
+        rc600_otp_success = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (2)\n"
+            "\t\t:type (ChallengeResponse)\n"
+            '\t\t:session_id ("s42")\n'
+            "\t\t:return_code (600)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            "\t\t:authn_status (done)\n"
+            "\t\t:is_authenticated (true)\n"
+            f"\t\t:active_key ({_snx_obfuscate(active_key)})\n"
+            "\t)\n"
+            ")\n"
+        )
+        self._setup_open(ca, [
+            _hello_resp(rc=600),
+            _otp_challenge_resp(session_id="s42", challenge="password: "),
+            rc600_otp_success,
+        ])
+        result = ca.authenticate(
+            "u", "p", "r",
+            otp_callback=lambda _: "123456",
+        )
+        assert result == active_key
+
+    def test_otp_challenge_prompt_deobfuscated(self):
+        """Obfuscated hex prompt from server is decoded to readable text before callback."""
+        ca = _ccc_auth()
+        # '771c203726313a372e5d' obfuscates to 'password: '
+        otp_resp_with_hex_prompt = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (1)\n"
+            '\t\t:session_id ("s1")\n'
+            "\t\t:return_code (5)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            '\t\t:prompt ("771c203726313a372e5d")\n'
+            "\t)\n"
+            ")\n"
+        )
+        self._setup_open(ca, [
+            _hello_resp(rc=502),
+            otp_resp_with_hex_prompt,
+            _auth_success_resp(),
+        ])
+        prompts_received = []
+        ca.authenticate(
+            "u", "p", "r",
+            otp_callback=lambda p: (prompts_received.append(p), "000000")[1],
+        )
+        assert prompts_received, "callback was called"
+        # "password:" prompt from server must be normalised to friendly label
+        assert prompts_received[0] == "CCC Authentication code"
+        assert "771c203726313a372e5d" not in prompts_received[0]
 
     # ── Portal session resume ────────────────────────────────────────────
 
@@ -601,8 +763,8 @@ class TestCccAuthenticate:
         )
         assert result == active_key
         assert len(posted) == 3  # Hello + portal resume + credential UserPass
-        # Third POST must contain the real username
-        assert ':username ("u")' in posted[2]
+        # Third POST must contain the real username (obfuscated)
+        assert f':username ("{_snx_obfuscate("u")}")' in posted[2]
 
     def test_portal_resume_skipped_when_server_returns_empty_session_id(self):
         """If ClientHello returns empty session_id, portal resume is skipped."""
@@ -625,7 +787,7 @@ class TestCccAuthenticate:
         assert result == active_key
         # Only Hello + credential UserPass — NO portal resume
         assert len(posted) == 2
-        assert ':username ("u")' in posted[1]
+        assert f':username ("{_snx_obfuscate("u")}")' in posted[1]
 
     def test_portal_resume_otp_challenge_handled(self):
         """If portal resume returns OTP challenge (rc=5), handle it via _handle_otp."""
@@ -653,6 +815,197 @@ class TestCccAuthenticate:
         )
         assert result == active_key
         assert otp_called  # OTP callback was invoked
+
+    # ── OTP retry on rc=600 + authn_status=continue ─────────────────────
+
+    def test_otp_retry_rc600_continue_prompts_user_and_succeeds(self):
+        """rc=600 + authn_status=continue after OTP → server issues a new session_id
+        and we re-ask the user for a fresh OTP code (ug.vpn.rt.ru pattern).
+
+        Real server behaviour (confirmed from live logs):
+        - ResponseHeader contains the OLD session_id
+        - ResponseData contains the NEW session_id to use for the retry request
+        The code must extract from ResponseData, not ResponseHeader.
+        """
+        ca = _ccc_auth()
+        active_key = "aabbccdd" * 8
+        obs_key = _snx_obfuscate(active_key)
+
+        # Mirrors ug.vpn.rt.ru: old session in Header, NEW session in ResponseData.
+        rc600_continue = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (2)\n"
+            '\t\t:session_id ("old_session")\n'   # old — must NOT be used for retry
+            "\t\t:return_code (600)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            "\t\t:authn_status (continue)\n"
+            "\t\t:auth_state (failed_attempt)\n"
+            '\t\t:session_id ("new_retry_session")\n'  # new — MUST be used for retry
+            "\t)\n"
+            ")\n"
+        )
+        rc0_success = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (3)\n"
+            '\t\t:session_id ("new_retry_session")\n'
+            "\t\t:return_code (0)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            f"\t\t:active_key ({obs_key})\n"
+            "\t\t:authn_status (done)\n"
+            "\t)\n"
+            ")\n"
+        )
+
+        prompts: list[str] = []
+        otp_values = ["111111", "222222"]  # first=wrong, second=correct
+
+        def otp_callback(prompt: str) -> str:
+            prompts.append(prompt)
+            return otp_values.pop(0)
+
+        self._setup_open(ca, [
+            _hello_resp(rc=502),
+            _otp_challenge_resp(session_id="s1"),  # UserPass → OTP challenge
+            rc600_continue,                          # ChallengeResponse 1 → wrong OTP
+            rc0_success,                             # ChallengeResponse 2 → success
+        ])
+        result = ca.authenticate("u", "p", "r", otp_callback=otp_callback)
+        assert result == active_key
+        # Callback must have been called twice: initial OTP + retry
+        assert len(prompts) == 2
+
+    def test_otp_retry_rc600_continue_user_cancels_retry_returns_none(self):
+        """If user cancels the retry OTP dialog, authenticate() returns None."""
+        ca = _ccc_auth()
+
+        rc600_continue = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (2)\n"
+            '\t\t:session_id ("old_sess")\n'
+            "\t\t:return_code (600)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            "\t\t:authn_status (continue)\n"
+            "\t\t:auth_state (failed_attempt)\n"
+            '\t\t:session_id ("new_retry_sess")\n'
+            "\t)\n"
+            ")\n"
+        )
+        call_count = 0
+
+        def otp_callback(prompt: str) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "111111"  # first OTP — will be rejected
+            return None  # user cancels retry
+
+        self._setup_open(ca, [
+            _hello_resp(rc=502),
+            _otp_challenge_resp(session_id="s1"),
+            rc600_continue,
+        ])
+        result = ca.authenticate("u", "p", "r", otp_callback=otp_callback)
+        assert result is None
+        assert call_count == 2, "callback should have been called twice"
+
+    def test_otp_retry_rc600_continue_no_callback_returns_none(self):
+        """If rc=600+continue but no callback available, return None (no retry possible)."""
+        ca = _ccc_auth()
+
+        rc600_continue = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (2)\n"
+            '\t\t:session_id ("s")\n'
+            "\t\t:return_code (600)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            "\t\t:authn_status (continue)\n"
+            "\t)\n"
+            ")\n"
+        )
+        # cached_otp used as first OTP (no callback)
+        self._setup_open(ca, [
+            _hello_resp(rc=502),
+            _otp_challenge_resp(session_id="s"),
+            rc600_continue,
+        ])
+        result = ca.authenticate("u", "p", "r", cached_otp="111111")
+        assert result is None
+
+    def test_otp_retry_uses_new_session_id_from_responsedata(self):
+        """Retry must use session_id from ResponseData, NOT from ResponseHeader.
+
+        Real server (ug.vpn.rt.ru) structure on rc=600+continue:
+          ResponseHeader.session_id = OLD (the original UserPass session)
+          ResponseData.session_id   = NEW (must be used for the retry request)
+        Using the old session_id from ResponseHeader causes rc=601 (session expired).
+        """
+        ca = _ccc_auth()
+        active_key = "cafebabe" * 8
+        obs_key = _snx_obfuscate(active_key)
+
+        posted_bodies: list[str] = []
+        old_session_id = "OLD_SESSION_IN_HEADER"
+        new_session_id = "NEW_SESSION_IN_RESPONSEDATA"
+
+        # Header has OLD, ResponseData has NEW — retry must use NEW.
+        rc600_continue = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (2)\n"
+            f'\t\t:session_id ("{old_session_id}")\n'   # old — must NOT be used
+            "\t\t:return_code (600)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            "\t\t:authn_status (continue)\n"
+            "\t\t:auth_state (failed_attempt)\n"
+            f'\t\t:session_id ("{new_session_id}")\n'   # new — MUST be used
+            "\t)\n"
+            ")\n"
+        )
+        rc0_success = (
+            "(CCCserverResponse\n"
+            "\t:ResponseHeader (\n"
+            "\t\t:id (3)\n"
+            "\t\t:return_code (0)\n"
+            "\t)\n"
+            "\t:ResponseData (\n"
+            f"\t\t:active_key ({obs_key})\n"
+            "\t\t:authn_status (done)\n"
+            "\t)\n"
+            ")\n"
+        )
+
+        responses = iter([
+            _hello_resp(rc=502),
+            _otp_challenge_resp(session_id="initial_session"),
+            rc600_continue,
+            rc0_success,
+        ])
+
+        def fake_post(body: str) -> str | None:
+            posted_bodies.append(body)
+            return next(responses, None)
+
+        ca._post_ccc = fake_post  # type: ignore[method-assign]
+        result = ca.authenticate("u", "p", "r", otp_callback=lambda _: "222222")
+        assert result == active_key
+        assert len(posted_bodies) == 4
+        # The 4th POST must use the NEW session_id from ResponseData.
+        assert new_session_id in posted_bodies[3], (
+            "retry ChallengeResponse must use session_id from ResponseData, not ResponseHeader"
+        )
+        # Sanity-check: must NOT use the old session_id from ResponseHeader.
+        assert old_session_id not in posted_bodies[3], (
+            "retry must NOT use the old session_id from ResponseHeader"
+        )
 
     # ── Active key extraction ────────────────────────────────────────────
 
@@ -686,43 +1039,6 @@ class TestCccIsAvailable:
             assert ca.is_available() is False
 
 
-# ---------------------------------------------------------------------------
-# PortalAuthResult.realm field
-# ---------------------------------------------------------------------------
-
-
-class TestPortalAuthResultRealm:
-    """Verify that authenticate() stores the realm in PortalAuthResult."""
-
-    def test_realm_stored_in_step1_success(self):
-        """When step 1 succeeds without OTP, result.realm must equal the realm from GET."""
-        from snxui.core.portal_auth import PortalAuth, PortalAuthResult
-
-        realm = "MY_REALM"
-        success_result = PortalAuthResult(success=True, session_id="SID")
-
-        with patch.object(PortalAuth, "_fetch_login_page", return_value={"realm": realm}), \
-             patch.object(PortalAuth, "_post_credentials", return_value=success_result), \
-             patch.object(PortalAuth, "_fetch_snx_resources", return_value=None):
-            pa = PortalAuth(server="vpn.test", port=443, verify_ssl=False)
-            result = pa.authenticate("user", "pass")
-
-        assert result.success is True
-        assert result.realm == realm
-
-    def test_realm_stored_in_step2_success(self):
-        """When step 2 (OTP) succeeds, result.realm must equal the realm from GET."""
-        from snxui.core.portal_auth import PortalAuth
-
-        # We'll just test the direct field setting path
-        from snxui.core.portal_auth import PortalAuthResult
-        r = PortalAuthResult(success=True, session_id="s", realm="ssl_vpn_RADIUS")
-        assert r.realm == "ssl_vpn_RADIUS"
-
-    def test_realm_default_empty(self):
-        from snxui.core.portal_auth import PortalAuthResult
-        assert PortalAuthResult(success=True).realm == ""
-
 
 def _make_response_raw(body: str):
     raw = body.encode("utf-8")
@@ -736,3 +1052,182 @@ def _make_response_raw(body: str):
 
 def _fake_portal_open(req, timeout=20):
     return _make_response_raw("")
+
+
+# ---------------------------------------------------------------------------
+# S-expression block extraction helpers
+# ---------------------------------------------------------------------------
+
+
+_HELLO_RESP_WITH_OPTIONS = """\
+(CCCserverResponse
+  :ResponseHeader (
+    :id (0)
+    :session_id ("")
+    :return_code (500)
+  )
+  :ResponseData (
+    :supported_data_tunnel_protocols (ssl ipsec)
+    :login_options_data (
+      :login_options_list (
+        (
+          :id ("vpn_ssl_vpn")
+          :display_name ("SSL VPN")
+          :show_realm (1)
+          :factors (
+            (:factor_type ("up"))
+          )
+        )
+        (
+          :id ("vpn_USERNAME_RADIUS")
+          :display_name ("Username + RADIUS")
+          :show_realm (1)
+          :factors (
+            (:factor_type ("up"))
+            (:factor_type ("radius"))
+          )
+        )
+      )
+    )
+  )
+)
+"""
+
+_HELLO_RESP_NO_OPTIONS = """\
+(CCCserverResponse
+  :ResponseHeader (
+    :id (0)
+    :session_id ("")
+    :return_code (502)
+  )
+  :ResponseData ()
+)
+"""
+
+_PORTAL_HTML_WITH_REALMS = """\
+<html>
+<script>
+var realmsArrJSON = '[{\\"name\\":\\"realm_A\\",\\"displayName\\":\\"Realm Alpha\\"},{\\"name\\":\\"realm_B\\",\\"displayName\\":\\"Realm Beta\\"}]';
+</script>
+</html>
+"""
+
+
+class TestExtractSexpBlock:
+    def test_simple_key(self) -> None:
+        text = ':foo (bar baz)'
+        assert _extract_sexp_block(text, "foo") == "bar baz"
+
+    def test_nested_parens(self) -> None:
+        text = ':outer (:inner (deep) end)'
+        block = _extract_sexp_block(text, "outer")
+        assert ":inner" in block
+        assert "deep" in block
+
+    def test_missing_key(self) -> None:
+        assert _extract_sexp_block("no key here", "missing") == ""
+
+    def test_unclosed_paren(self) -> None:
+        assert _extract_sexp_block(":key (unclosed", "key") == ""
+
+
+class TestSplitSexpItems:
+    def test_two_items(self) -> None:
+        block = "(a b) (c d)"
+        items = _split_sexp_items(block)
+        assert len(items) == 2
+        assert items[0].strip() == "a b"
+        assert items[1].strip() == "c d"
+
+    def test_nested_inner_parens(self) -> None:
+        block = "(:id (x) :name (y z)) (:id (p) :name (q))"
+        items = _split_sexp_items(block)
+        assert len(items) == 2
+
+    def test_empty_block(self) -> None:
+        assert _split_sexp_items("") == []
+
+
+class TestParseLoginOptions:
+    def test_two_options_returned(self) -> None:
+        options = _parse_login_options(_HELLO_RESP_WITH_OPTIONS)
+        assert len(options) == 2
+
+    def test_ids_correct(self) -> None:
+        options = _parse_login_options(_HELLO_RESP_WITH_OPTIONS)
+        ids = [o[0] for o in options]
+        assert "vpn_ssl_vpn" in ids
+        assert "vpn_USERNAME_RADIUS" in ids
+
+    def test_display_names_correct(self) -> None:
+        options = _parse_login_options(_HELLO_RESP_WITH_OPTIONS)
+        by_id = {o[0]: o[1] for o in options}
+        assert by_id["vpn_ssl_vpn"] == "SSL VPN"
+        assert by_id["vpn_USERNAME_RADIUS"] == "Username + RADIUS"
+
+    def test_no_options_block(self) -> None:
+        assert _parse_login_options(_HELLO_RESP_NO_OPTIONS) == []
+
+    def test_empty_string(self) -> None:
+        assert _parse_login_options("") == []
+
+
+class TestDiscoverLoginOptions:
+    """Tests for discover_login_options() — mocked network calls."""
+
+    def _make_ccc_resp(self, body: str, status: int = 200):
+        raw = body.encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read.return_value = raw
+        mock_resp.status = status
+        return mock_resp
+
+    def test_ccc_returns_options(self) -> None:
+        """When CCC ClientHello response has login_options_list, return them."""
+        mock_resp = self._make_ccc_resp(_HELLO_RESP_WITH_OPTIONS)
+
+        with patch("snxui.core.ccc_auth.urllib.request.OpenerDirector.open",
+                   return_value=mock_resp):
+            options = discover_login_options("vpn.example.com", 443, False)
+
+        assert len(options) == 2
+        assert options[0][0] == "vpn_ssl_vpn"
+
+    def test_ccc_no_options_fallback_to_portal(self) -> None:
+        """When CCC returns no login_options_list, fall back to portal HTML."""
+        ccc_resp = self._make_ccc_resp(_HELLO_RESP_NO_OPTIONS)
+        portal_resp = self._make_ccc_resp(_PORTAL_HTML_WITH_REALMS)
+
+        call_count = [0]
+
+        def _fake_open(req, timeout=10):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return ccc_resp  # first call = CCC
+            return portal_resp  # second call = portal HTML
+
+        with patch("snxui.core.ccc_auth.urllib.request.OpenerDirector.open", side_effect=_fake_open):
+            options = discover_login_options("vpn.example.com", 443, False)
+
+        assert len(options) == 2
+        ids = [o[0] for o in options]
+        assert "realm_A" in ids
+        assert "realm_B" in ids
+
+    def test_network_error_returns_empty(self) -> None:
+        """Network errors produce an empty list, not an exception."""
+        with patch("snxui.core.ccc_auth.urllib.request.OpenerDirector.open",
+                   side_effect=OSError("unreachable")):
+            options = discover_login_options("bad.host", 443, True)
+
+        assert options == []
+
+    def test_ccc_error_portal_also_fails_returns_empty(self) -> None:
+        """Both CCC and portal fail → empty list."""
+        with patch("snxui.core.ccc_auth.urllib.request.OpenerDirector.open",
+                   side_effect=OSError("connection refused")):
+            options = discover_login_options("vpn.example.com", 443, False)
+
+        assert options == []

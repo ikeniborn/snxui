@@ -139,7 +139,7 @@ class TestSNXApplication:
 
         mock_pm = MagicMock(name="ProfileManager")
         mock_cs = MagicMock(name="CredentialStore")
-        mock_be = MagicMock(name="SNXBackend")
+        mock_home_page = MagicMock(name="HomePage")
         mock_tm = MagicMock(name="TrayManager")
         mock_as = MagicMock(name="AutostartManager")
         mock_adw_app = MagicMock(name="Adw.Application")
@@ -147,7 +147,6 @@ class TestSNXApplication:
         with (
             patch("snxui.core.ProfileManager", return_value=mock_pm),
             patch("snxui.core.CredentialStore", return_value=mock_cs),
-            patch("snxui.core.SNXBackend", return_value=mock_be),
             patch("snxui.system.TrayManager", return_value=mock_tm),
             patch("snxui.system.AutostartManager", return_value=mock_as),
             patch("snxui.app.SNXApplication._setup_gtk_app"),
@@ -157,18 +156,22 @@ class TestSNXApplication:
 
         app.profile_manager = mock_pm
         app.credential_store = mock_cs
-        app.snx_backend = mock_be
+        app._home_page = mock_home_page
         app.tray_manager = mock_tm
         app.autostart = mock_as
         return app
 
     def test_init_creates_backend_components(self) -> None:
+        """SNXApplication._setup_backend creates ProfileManager, CredentialStore and TrayManager.
+
+        SNXBackend is no longer instantiated at startup — the backend is created
+        per-connect by BackendFactory in HomePage._start_connect.
+        """
         from snxui.app import SNXApplication
 
         with (
             patch("snxui.core.ProfileManager") as mock_pm_cls,
             patch("snxui.core.CredentialStore") as mock_cs_cls,
-            patch("snxui.core.SNXBackend") as mock_be_cls,
             patch("snxui.system.TrayManager") as mock_tm_cls,
             patch("snxui.system.AutostartManager") as mock_as_cls,
             patch("snxui.app.SNXApplication._setup_gtk_app"),
@@ -177,7 +180,6 @@ class TestSNXApplication:
 
         mock_pm_cls.assert_called_once()
         mock_cs_cls.assert_called_once()
-        mock_be_cls.assert_called_once()
         mock_tm_cls.assert_called_once()
         mock_as_cls.assert_called_once()
 
@@ -199,16 +201,37 @@ class TestSNXApplication:
         app.app.run.assert_called_once_with(None)
         assert result == 0
 
-    def test_on_shutdown_calls_disconnect_and_stop(self) -> None:
+    def test_on_shutdown_calls_home_page_disconnect_and_tray_stop(self) -> None:
+        """Shutdown must call disconnect() synchronously on the active backend.
+
+        _on_shutdown uses current_backend.disconnect() (synchronous) instead of
+        do_disconnect() (spawns a daemon thread that may be killed before completing).
+        Previously shutdown called self.snx_backend.disconnect() on a stale
+        SNXBinaryBackend instance that was never connected, causing
+        "SNX disconnect command returned unexpectedly (idx=1)" and a double
+        disconnect when the user reopened the app and clicked Disconnect.
+        """
         app = self._make_app()
         app._on_shutdown(app.app)
-        app.snx_backend.disconnect.assert_called_once()
+        app._home_page.current_backend.disconnect.assert_called_once()
+        app.tray_manager.stop.assert_called_once()
+
+    def test_on_shutdown_without_home_page_does_not_raise(self) -> None:
+        """Shutdown before window activation (home_page is None) must not crash.
+
+        If the app is closed before the first 'activate' signal (unlikely but
+        defensive), self._home_page is None and _on_shutdown must not raise.
+        """
+        app = self._make_app()
+        app._home_page = None
+        # Should NOT raise.
+        app._on_shutdown(app.app)
         app.tray_manager.stop.assert_called_once()
 
     def test_on_shutdown_handles_disconnect_exception(self) -> None:
         """Disconnect error on shutdown must not propagate."""
         app = self._make_app()
-        app.snx_backend.disconnect.side_effect = RuntimeError("snx gone")
+        app._home_page.current_backend.disconnect.side_effect = RuntimeError("backend gone")
         # Should NOT raise.
         app._on_shutdown(app.app)
         app.tray_manager.stop.assert_called_once()

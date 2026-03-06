@@ -341,6 +341,12 @@ DESKTOP
     cp "${PROJECT_ROOT}/snxui/data/com.snxui.policy" \
         "${APPDIR}/usr/share/polkit-1/actions/"
 
+    # Привилегированный хелпер — кладём в AppDir для последующей ручной установки.
+    # Пользователь должен скопировать его в /usr/lib/snxui/ (см. инструкцию ниже).
+    mkdir -p "${APPDIR}/usr/lib/snxui"
+    install -Dm755 "${PROJECT_ROOT}/snxui/helpers/snxui-net-helper" \
+        "${APPDIR}/usr/lib/snxui/snxui-net-helper"
+
     # Корневые файлы AppImage (обязательны для спецификации AppImage)
     ln -sf "usr/share/icons/hicolor/scalable/apps/snxui.svg" "${APPDIR}/snxui.svg"
     cp "${APPDIR}/usr/share/applications/snxui.desktop"        "${APPDIR}/snxui.desktop"
@@ -454,9 +460,17 @@ print_summary() {
     printf '  sudo apt-get install libgtk4 libadwaita libsecret polkit\n'
     printf '  sudo apt-get install libgtk4-gir libadwaita-gir\n'
     printf '\n'
-    printf 'Установка polkit policy (однократно, нужен root):\n'
-    printf '  sudo install -m644 snxui/data/com.snxui.policy \\\n'
-    printf '    /usr/share/polkit-1/actions/\n'
+    printf 'Однократная системная установка (нужен root):\n'
+    printf '  # Извлечь файлы из AppImage:\n'
+    printf '  ./%s --appimage-extract\n' "$(basename "${OUTPUT_APPIMAGE}")"
+    printf '\n'
+    printf '  # Установить привилегированный хелпер (pkexec использует его для TUN):\n'
+    printf '  sudo install -Dm755 squashfs-root/usr/lib/snxui/snxui-net-helper \\\n'
+    printf '    /usr/lib/snxui/snxui-net-helper\n'
+    printf '\n'
+    printf '  # Установить polkit policy:\n'
+    printf '  sudo install -Dm644 squashfs-root/usr/share/polkit-1/actions/com.snxui.policy \\\n'
+    printf '    /usr/share/polkit-1/actions/com.snxui.policy\n'
     printf '\n'
     printf 'Запуск:\n'
     printf '  chmod +x %s\n' "$(basename "${OUTPUT_APPIMAGE}")"

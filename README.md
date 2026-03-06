@@ -1,84 +1,114 @@
-# SNX VPN GUI Client
+# snxui
 
-Graphical client for Check Point SNX VPN on Ubuntu/Debian with support for GNOME, KDE Plasma, and XFCE.
+GTK4 GUI-клиент для подключения к корпоративному VPN Check Point SNX на Linux.
 
-## Features
+Работает без `/usr/bin/snx` и без `snx-rs` — протокол реализован напрямую на Python
+(CCC-аутентификация + SSL/SLIM туннель), что обеспечивает полную поддержку
+RADIUS MultiChallenge OTP и устраняет зависимость от проприетарных бинарников Check Point.
 
-- Profile management (multiple server connections)
-- Secure password storage (GNOME Keyring / KDE Wallet)
-- System tray with quick connect/disconnect
-- Autostart on login
-- Install as .deb or AppImage
+## Что решает
 
-## Requirements
+| Задача | Решение |
+|--------|---------|
+| RADIUS MultiChallenge OTP | OTP расходуется один раз на уровне CCC; SNX binary не нужен |
+| Нет `setcap cap_net_admin` на `python3` | TUN-устройство создаётся через `pkexec snxui-net-helper` |
+| Пароль не хранится на диске | Только системный keyring (libsecret / KDE Wallet) |
+| Управление несколькими серверами | Профили с независимыми настройками auth |
+| Работа без snx-rs и snx binary | Встроенная Python реализация CCC + SLIM протокола |
 
-- Ubuntu 22.04+ / Debian 12+
-- Python 3.10+
-- GTK4 + Libadwaita
-- Check Point SNX binary (snx)
-- polkit >= 0.105
+## Основа
 
-## Installation
+- **Python 3.10+**, GTK4, Libadwaita — UI для GNOME и совместимых сред
+- **CCC S-expression протокол** — аутентификация (идентично snx-rs/ccc.rs)
+- **SLIM протокол** — SSL туннель поверх TLS (идентично snx-rs/ssl.rs)
+- **polkit** — привилегированный хелпер для создания TUN-интерфейса
+- **pexpect** — опциональное взаимодействие с SNX binary / snxctl (legacy бэкенды)
 
-### Option 1: Release (recommended)
+## Функционал
 
-Download the latest `.deb` or AppImage from the [Releases page](https://github.com/ikeniborn/snxui/releases).
+- **Подключение к VPN** без `/usr/bin/snx` и без `snx-rs`
+- **RADIUS MultiChallenge OTP** — TOTP/HOTP/RSA SecurID через диалог или keyring
+- **Автоматическое определение login_type** (`snx-rs -m info -s <server>` не нужен вручную)
+- **Профили** — несколько серверов, переключение без перезапуска
+- **Системный keyring** — пароль и TOTP-секрет хранятся в libsecret / KDE Wallet
+- **Системный трей** — быстрое подключение / отключение, индикатор статуса
+- **Трафик в реальном времени** — скорость RX/TX на главной странице
+- **Автозапуск** — опционально, через XDG autostart
+- **polkit auth_self_keep** — один пароль-промпт за рабочую сессию (без sudo)
 
-**Debian/Ubuntu package:**
+## Установка
+
+### Релиз (рекомендуется)
+
+Скачать `.deb` или AppImage с [Releases](https://github.com/ikeniborn/snxui/releases):
+
 ```bash
-# Download the .deb from https://github.com/ikeniborn/snxui/releases
 sudo apt install ./snxui_*.deb
 ```
 
-**AppImage:**
+### Из исходников
+
 ```bash
-# Download the AppImage from https://github.com/ikeniborn/snxui/releases
-chmod +x snxui-*.AppImage
-./snxui-*.AppImage
+make install          # Ubuntu/Debian
+make install-alt      # ALT Linux p10
 ```
 
-### Option 2: pip (development)
-
 ```bash
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-dbus \
-    python3-keyring python3-secretstorage python3-pexpect python3-filelock
-pip install -e .
-# Install polkit policy (requires sudo)
-sudo install -m644 snxui/data/com.snxui.policy /usr/share/polkit-1/actions/
+make install-deps     # + dev-зависимости (pytest, mypy, black, debhelper)
 ```
 
-### Option 3: make install
+## Использование
 
 ```bash
-make install
+snxui              # запустить с окном
+snxui --minimized  # запустить в трей
+snxui --debug      # с отладочным логом
 ```
 
-For development (adds pytest, mypy, black, debhelper):
+## Разработка
 
 ```bash
-make install-deps
+make test           # pytest
+make format         # black
+make lint           # mypy + black --check
+make deb            # собрать .deb пакет
 ```
 
-## Usage
+## Сравнение с snx-rs
 
-```bash
-snxui              # launch with window
-snxui --minimized  # launch to tray
-snxui --debug      # with debug logging
+[snx-rs](https://github.com/ancwrd1/snx-rs) — независимая Rust-реализация того же протокола.
+
+| | snxui (python\_ssl) | snx-rs |
+|--|---------------------|--------|
+| Язык | Python 3.10+ | Rust |
+| GTK4 UI | ✅ встроен | ✅ отдельно — `snx-rs` daemon + snxctl |
+| SSL туннель | ✅ | ✅ |
+| IPSec (IKEv1/ESP) | ✗ не реализован | ✅ |
+| RADIUS MultiChallenge | ✅ OTP один раз | ✅ |
+| Пароль на диске | ✗ только keyring | ⚠ base64 в `snx-rs.conf` |
+| Зависимость от бинарников | `pkexec` + `ip` | `snx-rs` + `snxctl` (~10 MB) |
+| setcap на интерпретаторе | ✗ не нужен | ✗ setcap на snx-rs binary |
+| Производительность | Python (GIL) | Rust, Tokio, zero-copy |
+
+**Выбирайте snxui** если нужен GUI, RADIUS OTP работает через OTP-диалог,
+и не нужен IPSec.
+
+**Выбирайте snx-rs** если нужен IPSec, максимальная производительность,
+или daemon без UI.
+
+> snxui также поддерживает `snx-rs` как явно выбираемый бэкенд
+> (`profile.backend = "snx_rs"`) для совместимости.
+
+## Безопасность
+
+- Пароли — только в системном keyring, не в JSON-профилях
+- TUN-интерфейс создаётся через `pkexec snxui-net-helper` — root-права только у одного проверенного скрипта
+- polkit `auth_self_keep` — любой пользователь (не только sudo/wheel) вводит **свой** пароль один раз за сессию
+- Нет `shell=True` в subprocess-вызовах; IP-адреса и маршруты валидируются перед передачей хелперу
+- `verify_ssl=True` по умолчанию; отключение только явным флагом в профиле
+
+## Логи
+
 ```
-
-## Security
-
-- Passwords are stored in the system keyring (libsecret/KDE Wallet), not in files
-- SNX is launched with root privileges via polkit (no sudo password in the UI)
-- Profiles are stored in `~/.config/snxui/profiles.json` (without passwords)
-- Logs in `~/.local/share/snxui/snxui.log`
-
-## Development
-
-```bash
-make test           # run tests
-make test-coverage  # tests with coverage report
-make format         # format with black
-make lint           # mypy + black check
+~/.local/share/snxui/snxui.log
 ```

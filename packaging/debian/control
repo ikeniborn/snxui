@@ -18,16 +18,16 @@ Depends: ${misc:Depends},
  python3-dbus,
  python3-keyring,
  python3-secretstorage,
+ python3-filelock,
  python3-pexpect,
  libsecret-1-0,
- polkit (>= 0.105),
- lib32gcc-s1,
- libstdc++6:i386,
- network-manager
-Recommends: snx
+ policykit-1 | polkit (>= 0.105)
 Description: GUI client for Check Point SNX VPN
- SNX UI provides a graphical interface for the Check Point SNX VPN client.
- Features include profile management, secure credential storage via the
- system keyring, system tray integration, and autostart support.
+ SNX UI provides a graphical interface for the Check Point SNX VPN.
+ Uses a pure Python CCC + SSL/SLIM tunnel implementation — no SNX binary
+ or snx-rs required.
+ .
+ Features: profile management, RADIUS MultiChallenge OTP, secure credential
+ storage via the system keyring, system tray integration, and autostart.
  .
  Supports GNOME, KDE Plasma, XFCE and other desktop environments.

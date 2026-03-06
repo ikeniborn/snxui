@@ -85,6 +85,7 @@ class Profile:
     save_totp_secret: bool = False
     combined_auth: bool = False         # Append OTP to password (servers without interactive OTP prompt)
     portal_auth: bool = False           # Use HTTPS portal auth before SNX (servers requiring browser flow)
+    ccc_only_auth: bool = False         # Skip portal, authenticate directly via CCC /clients/ endpoint
     portal_reconnect_mode: bool = False  # Use SNX -r (reconnect) flag after portal auth writes ~/.snxrc
     tunnel_type: TunnelType = TunnelType.SSL
     esp_settings: Optional[str] = None  # e.g. "aes256-sha256" — IPSec mode only
@@ -107,6 +108,7 @@ class ConnectionStatus:
         interface: Network interface name (typically ``tunsnx``).
         connected_at: Unix timestamp of when the connection was established.
         error_message: Human-readable error description when state is ERROR.
+        warning: Non-None when connected with degraded routing/security (e.g. split-tunnel).
     """
 
     state: ConnectionState = ConnectionState.DISCONNECTED
@@ -115,3 +117,4 @@ class ConnectionStatus:
     interface: Optional[str] = None
     connected_at: Optional[float] = None
     error_message: Optional[str] = None
+    warning: Optional[str] = None  # Non-None when connected with degraded routing/security

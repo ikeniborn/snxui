@@ -6,9 +6,9 @@ Layout:
         Adw.SwitchRow "Launch at login"
         Adw.SwitchRow "Minimize to tray on close"
         Adw.ComboRow "Color scheme" (System / Light / Dark)
-      Adw.PreferencesGroup "SNX"
-        Adw.ActionRow "SNX Binary" (path)
+      Adw.PreferencesGroup "System"
         Adw.ActionRow "Polkit status"
+        Adw.ActionRow "Net Helper" (path)
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class SettingsPage:
         self._page = Adw.PreferencesPage()
         self._page.add(self._build_general_group())
         self._page.add(self._build_connection_group())
-        self._page.add(self._build_snx_group())
+        self._page.add(self._build_system_group())
 
     def _build_general_group(self) -> "Adw.PreferencesGroup":
         """Build and return the General preferences group."""
@@ -126,32 +126,32 @@ class SettingsPage:
 
         return conn_group
 
-    def _build_snx_group(self) -> "Adw.PreferencesGroup":
-        """Build and return the SNX diagnostics preferences group."""
-        snx_group = Adw.PreferencesGroup(title="SNX")
-
-        snx_path = self._find_snx_binary()
-        snx_row = Adw.ActionRow(
-            title="SNX Binary",
-            subtitle=snx_path,
-        )
-        snx_icon = Gtk.Image.new_from_icon_name(
-            "utilities-terminal-symbolic" if snx_path != "Not found" else "dialog-warning-symbolic"
-        )
-        snx_row.add_prefix(snx_icon)
-        snx_group.add(snx_row)
+    def _build_system_group(self) -> "Adw.PreferencesGroup":
+        """Build and return the System diagnostics preferences group."""
+        system_group = Adw.PreferencesGroup(title="System")
 
         polkit_status = self._check_polkit()
         polkit_row = Adw.ActionRow(
             title="Polkit Status",
             subtitle=polkit_status,
         )
-        polkit_icon = Gtk.Image.new_from_icon_name(
-            "security-high-symbolic" if "available" in polkit_status.lower() else "security-low-symbolic"
+        polkit_ok = "available" in polkit_status.lower()
+        polkit_row.add_prefix(Gtk.Image.new_from_icon_name(
+            "security-high-symbolic" if polkit_ok else "security-low-symbolic"
+        ))
+        system_group.add(polkit_row)
+
+        helper_path, helper_ok = self._check_net_helper()
+        helper_row = Adw.ActionRow(
+            title="Net Helper",
+            subtitle=helper_path,
         )
-        polkit_row.add_prefix(polkit_icon)
-        snx_group.add(polkit_row)
-        return snx_group
+        helper_row.add_prefix(Gtk.Image.new_from_icon_name(
+            "security-high-symbolic" if helper_ok else "dialog-warning-symbolic"
+        ))
+        system_group.add(helper_row)
+
+        return system_group
 
     @property
     def widget(self) -> "Adw.PreferencesPage":
@@ -200,21 +200,20 @@ class SettingsPage:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _find_snx_binary() -> str:
-        """Return the path to the SNX binary, or 'Not found'."""
-        for candidate in ("/usr/bin/snx", "/usr/local/bin/snx"):
-            if shutil.which(candidate):
-                return candidate
-        found = shutil.which("snx")
-        return found or "Not found"
-
-    @staticmethod
     def _check_polkit() -> str:
         """Return a human-readable polkit status string."""
         pkexec = shutil.which("pkexec")
         if not pkexec:
             return "pkexec not found — install policykit-1"
         return f"Available ({pkexec})"
+
+    @staticmethod
+    def _check_net_helper() -> tuple[str, bool]:
+        """Return (subtitle, ok) for the snxui-net-helper diagnostic row."""
+        path = Path("/usr/lib/snxui/snxui-net-helper")
+        if path.exists():
+            return str(path), True
+        return "Not found — reinstall snxui package", False
 
     # ------------------------------------------------------------------
     # Callbacks

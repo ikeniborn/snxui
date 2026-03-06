@@ -6,32 +6,19 @@
   <vendor>SNX UI</vendor>
   <vendor_url>https://github.com/snxui/snxui</vendor_url>
 
-  <action id="com.snxui.connect">
-    <description>Connect to Check Point SNX VPN</description>
-    <description xml:lang="ru">Подключиться к Check Point SNX VPN</description>
-    <message>Authentication is required to connect to VPN</message>
-    <message xml:lang="ru">Для подключения к VPN требуется аутентификация</message>
+  <action id="com.snxui.tun">
+    <description>Create VPN TUN network interface</description>
+    <description xml:lang="ru">Создать TUN-интерфейс для VPN</description>
+    <message>Authentication required to create VPN network interface</message>
+    <message xml:lang="ru">Для создания сетевого интерфейса VPN требуется аутентификация</message>
     <icon_name>network-vpn</icon_name>
     <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/snx</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/snxui/snxui-net-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
-  </action>
-
-  <action id="com.snxui.disconnect">
-    <description>Disconnect from Check Point SNX VPN</description>
-    <description xml:lang="ru">Отключиться от Check Point SNX VPN</description>
-    <message>Authentication is required to disconnect from VPN</message>
-    <message xml:lang="ru">Для отключения от VPN требуется аутентификация</message>
-    <icon_name>network-vpn</icon_name>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>yes</allow_active>
-    </defaults>
   </action>
 
 </policyconfig>

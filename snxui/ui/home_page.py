@@ -97,12 +97,16 @@ class HomePage:
         self._status_label = Gtk.Label(label="Disconnected")
         self._status_label.add_css_class("title-2")
         self._status_label.set_margin_bottom(4)
+        self._status_label.set_wrap(True)
+        self._status_label.set_max_width_chars(42)
+        self._status_label.set_justify(Gtk.Justification.CENTER)
 
         self._info_label = Gtk.Label(label="")
         self._info_label.add_css_class("caption")
         self._info_label.set_opacity(0.6)
         self._info_label.set_margin_bottom(16)
         self._info_label.set_wrap(True)
+        self._info_label.set_max_width_chars(48)
         self._info_label.set_justify(Gtk.Justification.CENTER)
         self._info_label.set_visible(False)
 
@@ -177,6 +181,19 @@ class HomePage:
     def widget(self) -> "Adw.PreferencesPage":
         """Return the root GTK widget for this page."""
         return self._page
+
+    @property
+    def current_backend(self) -> "VPNBackend":
+        """Return the currently active VPN backend.
+
+        :meth:`_start_connect` replaces :attr:`_backend` with a new
+        :class:`~snxui.core.vpn_backend.VPNBackend` instance created by
+        :class:`~snxui.core.vpn_backend.BackendFactory` each time a
+        connection is initiated.  This property exposes the *current*
+        instance so callers (e.g. :class:`~snxui.app.SNXApplication`)
+        can reach the active backend without holding a stale reference.
+        """
+        return self._backend
 
     # ------------------------------------------------------------------
     # Profile list helpers
@@ -268,6 +285,11 @@ class HomePage:
         iface = status.interface or "tunsnx"
         self._traffic.start(iface)
 
+        if status.warning:
+            window = self.widget.get_root()
+            if window is not None and hasattr(window, "add_toast"):
+                window.add_toast(Adw.Toast(title=status.warning, timeout=15))
+
     def _apply_connecting(self) -> None:
         """Update UI for the CONNECTING state."""
         self._status_icon.set_from_icon_name("network-transmit-receive-symbolic")
@@ -303,11 +325,12 @@ class HomePage:
         err = status.error_message or "Unknown error"
         self._current_error = err  # stored for clipboard copy
 
-        # Line 0 → title in UI.  Line 1 → subtitle in UI.
-        # Lines 2+ (command, raw output) → clipboard only, not shown.
-        lines = err.strip().splitlines()
-        title_line = lines[0] if lines else err
-        detail_line = lines[1].strip() if len(lines) > 1 else ""
+        # First non-empty line → title in UI.
+        # Second non-empty line → subtitle in UI (skips blank paragraph separators).
+        # Remaining lines (command, raw output) → clipboard only, not shown.
+        non_empty = [l.strip() for l in err.strip().splitlines() if l.strip()]
+        title_line = non_empty[0] if non_empty else err
+        detail_line = non_empty[1] if len(non_empty) > 1 else ""
 
         self._status_label.set_label(f"Error: {title_line}")
         if detail_line:
@@ -446,6 +469,15 @@ class HomePage:
 
     def _do_disconnect(self) -> None:
         """Initiate disconnection in a background thread."""
+        # Stop the traffic monitor immediately — before spawning the
+        # background thread — so it does not keep polling a dead interface.
+        # On application shutdown the GTK main loop may not process
+        # GLib.idle_add callbacks, so we cannot rely on _apply_disconnected
+        # to stop the monitor.
+        if self._traffic is not None:
+            self._traffic.stop()
+            self._traffic = None
+
         self._apply_disconnecting()
 
         def _run() -> None:
@@ -582,23 +614,6 @@ class HomePage:
                 # would again override it with DISCONNECTED.
                 if success:
                     GLib.idle_add(self._refresh_status)
-                elif (
-                    profile.portal_auth
-                    and hasattr(self._backend, "_portal_credentials_failed")
-                    and self._backend._portal_credentials_failed
-                ):
-                    # Portal auth rejected the credentials (wrong password).
-                    # Delete the cached password so the next attempt doesn't
-                    # silently re-use it, then re-show the PasswordDialog.
-                    try:
-                        self._cs.delete_password(profile.id)
-                    except Exception:
-                        pass
-                    cached = self._backend.get_cached_status()
-                    error_hint = (
-                        cached.error_message if cached else "Portal authentication failed."
-                    )
-                    GLib.idle_add(self._ask_password_then_connect, profile, error_hint)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -645,19 +660,14 @@ class HomePage:
     ) -> "Optional[TwoFactorCallback]":
         """Return appropriate 2FA callback based on profile's method.
 
-        For ``portal_auth=True`` profiles: this callback is passed to both the
-        portal HTTPS stage (PortalAuth.authenticate) and the SNX PTY stage
-        (SNXBackend._handle_post_password).  However, if the portal step 2
-        already collected an OTP, ``SNXBackend.connect()`` wraps this callback
-        with a one-shot that automatically returns the cached OTP for the first
-        PTY prompt — the user is therefore only asked once, not twice.
+        Passed to the backend's ``connect()`` method.  For TOTP/HOTP the code
+        is generated automatically from the stored secret; for all other methods
+        a :class:`TwoFactorDialog` is shown to the user.
         """
         from snxui.core.types import TwoFactorMethod
         if (
             profile.two_factor_method == TwoFactorMethod.NONE
             and not self._load_ask_server_mfa()
-            and not profile.combined_auth
-            and not profile.portal_auth
         ):
             return None
         if profile.two_factor_method in (TwoFactorMethod.TOTP, TwoFactorMethod.HOTP):

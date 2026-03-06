@@ -1,0 +1,21 @@
+#!/bin/sh
+# postinst — runs as root after package installation.
+set -e
+
+case "$1" in
+    configure)
+        # TUN interface privileges are handled via polkit (com.snxui.tun action)
+        # and the snxui-net-helper script installed to /usr/lib/snxui/.
+        # No setcap or other capability grants are needed.
+        :
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument '$1'" >&2
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

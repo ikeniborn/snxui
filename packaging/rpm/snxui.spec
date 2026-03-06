@@ -22,16 +22,15 @@ Requires:       python3-filelock
 Requires:       python3-pexpect
 Requires:       libsecret
 Requires:       polkit >= 0.105
-Requires:       libgcc.i686
-Requires:       libstdc++.i686
-Requires:       NetworkManager
 Suggests:       libayatana-appindicator-gtk3
-Suggests:       snx
 
 %description
-SNX UI provides a graphical interface for the Check Point SNX VPN client.
-Features include profile management, secure credential storage via the
-system keyring, system tray integration, and autostart support.
+SNX UI provides a graphical interface for the Check Point SNX VPN.
+Uses a pure Python CCC + SSL/SLIM tunnel implementation — no SNX binary
+or snx-rs required.
+
+Features: profile management, RADIUS MultiChallenge OTP, secure credential
+storage via the system keyring, system tray integration, and autostart.
 
 Supports GNOME, KDE Plasma, XFCE and other desktop environments.
 
@@ -50,6 +49,8 @@ python3 -m pip install \
     --no-compile \
     .
 
+install -Dm755 snxui/helpers/snxui-net-helper \
+    %{buildroot}/usr/lib/snxui/snxui-net-helper
 install -Dm644 snxui/data/com.snxui.policy \
     %{buildroot}%{_datadir}/polkit-1/actions/com.snxui.policy
 install -Dm644 snxui/data/snxui.desktop \
@@ -61,6 +62,7 @@ install -Dm644 snxui/data/icons/snxui.svg \
 %{_bindir}/snxui
 %{python3_sitelib}/snxui/
 %{python3_sitelib}/snxui-*.dist-info/
+/usr/lib/snxui/snxui-net-helper
 %{_datadir}/polkit-1/actions/com.snxui.policy
 %{_datadir}/applications/snxui.desktop
 %{_datadir}/icons/hicolor/scalable/apps/snxui.svg

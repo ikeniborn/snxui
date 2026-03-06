@@ -2,21 +2,16 @@
 
 Defines the :class:`VPNBackend` abstract base class that all backend
 implementations must satisfy, and :class:`BackendFactory` which selects
-the appropriate concrete backend based on profile settings and available
-binaries.
+the appropriate concrete backend based on profile settings.
 
 Available backends:
-    * :class:`~snxui.core.snx_rs_backend.SNXRsBackend` — snx-rs daemon
-      (snx-rs / snxctl), uses CCC protocol natively, supports IPSec.
-    * :class:`~snxui.core.snx_backend.SNXBinaryBackend` — /usr/bin/snx
-      via pexpect PTY automation.
+    * :class:`~snxui.core.ssl_tunnel_backend.PythonSSLBackend` — pure
+      Python CCC auth + SLIM SSL tunnel, no external binaries required.
 """
 
 from __future__ import annotations
 
-import shutil
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -74,27 +69,6 @@ class VPNBackend(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Detection helpers
-# ---------------------------------------------------------------------------
-
-
-def detect_snx_rs() -> bool:
-    """Return ``True`` if the snx-rs binaries (``snx-rs`` and ``snxctl``) are in PATH."""
-    return shutil.which("snx-rs") is not None and shutil.which("snxctl") is not None
-
-
-def detect_snx_binary() -> bool:
-    """Return ``True`` if the Check Point SNX binary exists on this system."""
-    search_paths: list[Path] = [
-        Path("/usr/bin/snx"),
-        Path("/usr/local/bin/snx"),
-        Path.home() / "Downloads" / "snx",
-        Path.home() / "snx",
-    ]
-    return any(p.exists() for p in search_paths)
-
-
-# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -102,12 +76,10 @@ def detect_snx_binary() -> bool:
 class BackendFactory:
     """Create the appropriate :class:`VPNBackend` for a given profile.
 
-    Selection logic (``profile.backend``):
-
-    * ``"snx_rs"``  — always use :class:`~snxui.core.snx_rs_backend.SNXRsBackend`.
-    * ``"snx"``     — always use :class:`~snxui.core.snx_backend.SNXBinaryBackend`.
-    * ``"auto"``    — prefer snx-rs if ``snx-rs``/``snxctl`` are in PATH, else fall back to
-      the SNX binary.
+    All profiles use :class:`~snxui.core.ssl_tunnel_backend.PythonSSLBackend`
+    (pure Python CCC auth + SLIM SSL tunnel, no external binaries required).
+    The ``profile.backend`` attribute is accepted for forward compatibility but
+    any value maps to ``PythonSSLBackend``.
     """
 
     @staticmethod
@@ -115,33 +87,10 @@ class BackendFactory:
         """Instantiate and return the backend for *profile*.
 
         Args:
-            profile: The profile whose ``backend`` attribute drives selection.
+            profile: The profile whose settings drive the connection.
 
         Returns:
             A ready-to-use :class:`VPNBackend` instance.
-
-        Raises:
-            RuntimeError: If the requested backend binary is not found.
         """
-        backend_choice: str = getattr(profile, "backend", "auto")
-
-        if backend_choice == "snx_rs":
-            if not detect_snx_rs():
-                raise RuntimeError(
-                    "snx-rs backend requested but snx-rs/snxctl is not found in PATH. "
-                    "Install snx-rs: https://github.com/ancwrd1/snx-rs"
-                )
-            from .snx_rs_backend import SNXRsBackend
-            return SNXRsBackend()
-
-        if backend_choice == "snx":
-            from .snx_backend import SNXBinaryBackend
-            return SNXBinaryBackend()
-
-        # "auto" — prefer snx-rs
-        if detect_snx_rs():
-            from .snx_rs_backend import SNXRsBackend
-            return SNXRsBackend()
-
-        from .snx_backend import SNXBinaryBackend
-        return SNXBinaryBackend()
+        from .ssl_tunnel_backend import PythonSSLBackend
+        return PythonSSLBackend()
