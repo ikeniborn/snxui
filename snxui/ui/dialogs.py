@@ -431,8 +431,6 @@ class ProfileDialog:
         auth_mode_row.connect("notify::selected", _on_auth_mode_changed)
         _on_auth_mode_changed(auth_mode_row, None)  # apply initial state
 
-        tunnel_row, esp_row, ike_row = self._build_tunnel_group(prefs_page)
-
         cur_method_idx = 0
         if p and p.two_factor_method.value in _2FA_METHOD_VALUES:
             cur_method_idx = _2FA_METHOD_VALUES.index(p.two_factor_method.value)
@@ -447,59 +445,10 @@ class ProfileDialog:
             "user": user_row, "domain": domain_row,
             "port": port_row, "ca": ca_row, "cert": cert_row,
             "save_pwd": save_pwd_row,
-            "tunnel": tunnel_row, "esp": esp_row, "ike": ike_row,
             "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
             "ignore_server_cert": ignore_cert_row,
         }
         return scroll, rows
-
-    def _build_tunnel_group(
-        self, prefs_page: object
-    ) -> "tuple[object, object, object]":
-        """Build Tunnel Type group with conditional ESP/IKE fields.
-
-        Returns:
-            Tuple of (tunnel_row, esp_row, ike_row).
-        """
-        from snxui.core.types import TunnelType
-
-        p = self._profile
-
-        tunnel_group = Adw.PreferencesGroup(title="Connection Mode")
-        prefs_page.add(tunnel_group)
-
-        tunnel_model = Gtk.StringList()
-        tunnel_model.append("SSL (default)")
-        tunnel_model.append("IPSec / ESP (not yet supported)")
-        tunnel_row = Adw.ComboRow(
-            title="Tunnel Type",
-            subtitle="IPSec is not yet implemented in the Python SSL backend",
-            model=tunnel_model,
-        )
-        # Always force SSL — IPSec not implemented; lock to index 0.
-        tunnel_row.set_selected(0)
-        tunnel_row.set_sensitive(False)
-        tunnel_group.add(tunnel_row)
-
-        # IPSec-specific parameters — hidden until IPSec is implemented.
-        ipsec_group = Adw.PreferencesGroup()
-        prefs_page.add(ipsec_group)
-
-        esp_row = Adw.EntryRow(title="ESP Algorithm (e.g. aes256-sha256)")
-        esp_row.set_text(p.esp_settings or "" if p else "")
-        ipsec_group.add(esp_row)
-
-        ike_row = Adw.EntryRow(title="IKE Proposal (e.g. aes256-sha256-modp2048)")
-        ike_row.set_text(p.ike_settings or "" if p else "")
-        ipsec_group.add(ike_row)
-
-        def _on_tunnel_changed(combo: object, _param: object) -> None:
-            ipsec_group.set_visible(combo.get_selected() == 1)  # type: ignore[union-attr]
-
-        tunnel_row.connect("notify::selected", _on_tunnel_changed)
-        _on_tunnel_changed(tunnel_row, None)  # apply initial state
-
-        return tunnel_row, esp_row, ike_row
 
     def _build_2fa_group(
         self, prefs_page: object, cur_method_idx: int
@@ -678,8 +627,7 @@ class ProfileDialog:
         method_idx = rows["2fa_method"].get_selected()
         two_factor_method = TwoFactorMethod(_2FA_METHOD_VALUES[method_idx])
         totp_secret: Optional[str] = rows["totp_secret"].get_text().strip() or None
-        ipsec_mode = rows["tunnel"].get_selected() == 1
-        tunnel_type = TunnelType.IPSEC if ipsec_mode else TunnelType.SSL
+        tunnel_type = TunnelType.SSL
 
         profile = Profile(
             id=self._profile.id if self._profile else str(uuid.uuid4()),
@@ -697,8 +645,8 @@ class ProfileDialog:
             portal_auth=False,
             ccc_only_auth=False,
             tunnel_type=tunnel_type,
-            esp_settings=rows["esp"].get_text().strip() or None if ipsec_mode else None,
-            ike_settings=rows["ike"].get_text().strip() or None if ipsec_mode else None,
+            esp_settings=None,
+            ike_settings=None,
             backend="python_ssl",
             login_type=self._profile.login_type if self._profile else "",
             transport_type="auto",

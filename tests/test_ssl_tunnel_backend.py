@@ -7,7 +7,8 @@ privileges are required.
 TUN interface setup flow (new polkit-based approach):
   create_tun()    — validates interface name only, no OS calls
   configure_net() — invokes pkexec + snxui-net-helper, then os.open + ioctl
-  _teardown_net() — invokes pkexec + snxui-net-helper destroy (best-effort)
+  _teardown_net() — TUNSETPERSIST 0 ioctl (no pkexec); kernel destroys
+                    the interface when close() closes the fd
 """
 
 from __future__ import annotations
@@ -620,36 +621,110 @@ class TestSSLTunnelInputValidation:
         assert 77 in closed_fds
         _close_tunnel_pipes(tunnel)
 
-    # ------------------------------------------------------------------
-    # _teardown_net — pkexec destroy
-    # ------------------------------------------------------------------
-
-    def test_teardown_net_calls_pkexec_destroy(self) -> None:
-        """_teardown_net invokes pkexec + snxui-net-helper destroy."""
-        from snxui.core.ssl_tunnel import _NET_HELPER
-
+    def test_configure_net_passes_dns_to_helper(self) -> None:
+        """configure_net appends --dns args when dns_servers is non-empty."""
         tunnel = _make_tunnel()
-        with patch("snxui.core.ssl_tunnel.subprocess.run") as mock_run:
-            tunnel._teardown_net()
+        config = TunnelConfig(
+            assigned_ip="10.0.0.5",
+            routes=[("10.0.0.0", "8")],
+            dns_servers=["10.0.0.53", "10.0.0.54"],
+        )
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+
+        with patch("snxui.core.ssl_tunnel.subprocess.run", return_value=mock_result) as mock_run, \
+             patch("snxui.core.ssl_tunnel.os.open", return_value=42), \
+             patch("snxui.core.ssl_tunnel.fcntl.ioctl"), \
+             patch("snxui.core.ssl_tunnel.os.getuid", return_value=1000):
+            tunnel.configure_net(config, "tunsnx")
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "pkexec"
-        assert cmd[1] == _NET_HELPER
-        assert cmd[2] == "destroy"
-        assert cmd[3] == "tunsnx"
+        assert "--dns" in cmd
+        assert "10.0.0.53" in cmd
+        assert "10.0.0.54" in cmd
+        # DNS args must come after route args
+        assert cmd.index("--dns") > cmd.index("10.0.0.0/8")
         _close_tunnel_pipes(tunnel)
 
-    def test_teardown_net_no_op_when_no_iface(self) -> None:
-        """_teardown_net does nothing when no interface name is set."""
-        tunnel = SSLTunnel()
-        with patch("snxui.core.ssl_tunnel.subprocess.run") as mock_run:
-            tunnel._teardown_net()
-        mock_run.assert_not_called()
-
-    def test_teardown_net_ignores_subprocess_errors(self) -> None:
-        """_teardown_net swallows exceptions from pkexec (best-effort teardown)."""
+    def test_configure_net_no_dns_args_when_empty(self) -> None:
+        """configure_net does not add --dns when dns_servers is empty."""
         tunnel = _make_tunnel()
-        with patch("snxui.core.ssl_tunnel.subprocess.run", side_effect=OSError("gone")):
+        config = TunnelConfig(assigned_ip="10.0.0.5")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+
+        with patch("snxui.core.ssl_tunnel.subprocess.run", return_value=mock_result) as mock_run, \
+             patch("snxui.core.ssl_tunnel.os.open", return_value=42), \
+             patch("snxui.core.ssl_tunnel.fcntl.ioctl"), \
+             patch("snxui.core.ssl_tunnel.os.getuid", return_value=1000):
+            tunnel.configure_net(config, "tunsnx")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--dns" not in cmd
+        _close_tunnel_pipes(tunnel)
+
+    def test_configure_net_skips_invalid_dns_entries(self) -> None:
+        """configure_net silently drops non-IP DNS entries and passes only valid ones."""
+        tunnel = _make_tunnel()
+        config = TunnelConfig(
+            assigned_ip="10.0.0.5",
+            dns_servers=["10.0.0.53", "not-an-ip", "10.0.0.54"],
+        )
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "OK"
+        mock_result.stderr = ""
+
+        with patch("snxui.core.ssl_tunnel.subprocess.run", return_value=mock_result) as mock_run, \
+             patch("snxui.core.ssl_tunnel.os.open", return_value=42), \
+             patch("snxui.core.ssl_tunnel.fcntl.ioctl"), \
+             patch("snxui.core.ssl_tunnel.os.getuid", return_value=1000):
+            tunnel.configure_net(config, "tunsnx")
+
+        cmd = mock_run.call_args[0][0]
+        assert "10.0.0.53" in cmd
+        assert "10.0.0.54" in cmd
+        assert "not-an-ip" not in cmd
+        _close_tunnel_pipes(tunnel)
+
+    # ------------------------------------------------------------------
+    # _teardown_net — TUNSETPERSIST 0 (no pkexec)
+    # ------------------------------------------------------------------
+
+    def test_teardown_net_clears_persist_flag(self) -> None:
+        """_teardown_net calls TUNSETPERSIST 0 ioctl on the open tun fd.
+
+        No pkexec is invoked — the fd owner may clear persistence without
+        CAP_NET_ADMIN.  The interface is destroyed by the kernel when close()
+        closes the fd.
+        """
+        from snxui.core.ssl_tunnel import _TUNSETPERSIST
+
+        tunnel = _make_tunnel()
+        with patch("snxui.core.ssl_tunnel.fcntl.ioctl") as mock_ioctl:
+            tunnel._teardown_net()
+
+        mock_ioctl.assert_called_once()
+        args = mock_ioctl.call_args[0]
+        assert args[0] == tunnel._tun_fd
+        assert args[1] == _TUNSETPERSIST
+        _close_tunnel_pipes(tunnel)
+
+    def test_teardown_net_no_op_when_no_fd(self) -> None:
+        """_teardown_net does nothing when tun fd is not open."""
+        tunnel = SSLTunnel()
+        with patch("snxui.core.ssl_tunnel.fcntl.ioctl") as mock_ioctl:
+            tunnel._teardown_net()
+        mock_ioctl.assert_not_called()
+
+    def test_teardown_net_ignores_ioctl_errors(self) -> None:
+        """_teardown_net swallows OSError from ioctl (best-effort teardown)."""
+        tunnel = _make_tunnel()
+        with patch("snxui.core.ssl_tunnel.fcntl.ioctl", side_effect=OSError("bad fd")):
             tunnel._teardown_net()   # must not raise
         _close_tunnel_pipes(tunnel)
 
@@ -1108,3 +1183,76 @@ class TestPythonSSLBackend:
             s for s in statuses if s.state == ConnectionState.ERROR
         )
         assert "password" in (error_status.error_message or "").lower()
+
+    # ------------------------------------------------------------------
+    # Split-tunnel warning
+    # ------------------------------------------------------------------
+
+    def test_connect_emits_warning_when_no_default_route(self) -> None:
+        """CONNECTED status has warning when gateway provides no 0.0.0.0/0 route."""
+        backend = PythonSSLBackend()
+        profile = _make_profile(login_type="vpn_ssl")
+        config = TunnelConfig(
+            assigned_ip="10.0.0.5",
+            dns_servers=["10.0.0.1"],
+            routes=[("10.0.0.0", "8"), ("192.168.0.0", "16")],
+            keepalive_timeout=20,
+        )
+        mock_tunnel = self._make_mock_tunnel(config)
+        statuses = []
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCC, \
+             patch("snxui.core.ssl_tunnel.SSLTunnel", return_value=mock_tunnel), \
+             patch(
+                 "snxui.core.ccc_auth.discover_login_options",
+                 return_value=[],
+             ):
+            MockCCC.return_value.authenticate.return_value = "active_key"
+            MockCCC.return_value.credentials_rejected = False
+
+            backend.connect(
+                profile,
+                password="pw",
+                status_callback=statuses.append,
+            )
+
+        connected = next(
+            (s for s in statuses if s.state == ConnectionState.CONNECTED), None
+        )
+        assert connected is not None
+        assert connected.warning is not None
+        assert "split" in connected.warning.lower() or "isp" in connected.warning.lower()
+
+    def test_connect_no_warning_when_default_route_present(self) -> None:
+        """CONNECTED status has warning=None when 0.0.0.0/0 route is included."""
+        backend = PythonSSLBackend()
+        profile = _make_profile(login_type="vpn_ssl")
+        config = TunnelConfig(
+            assigned_ip="10.0.0.5",
+            dns_servers=["10.0.0.1"],
+            routes=[("0.0.0.0", "0"), ("10.0.0.0", "8")],
+            keepalive_timeout=20,
+        )
+        mock_tunnel = self._make_mock_tunnel(config)
+        statuses = []
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCC, \
+             patch("snxui.core.ssl_tunnel.SSLTunnel", return_value=mock_tunnel), \
+             patch(
+                 "snxui.core.ccc_auth.discover_login_options",
+                 return_value=[],
+             ):
+            MockCCC.return_value.authenticate.return_value = "active_key"
+            MockCCC.return_value.credentials_rejected = False
+
+            backend.connect(
+                profile,
+                password="pw",
+                status_callback=statuses.append,
+            )
+
+        connected = next(
+            (s for s in statuses if s.state == ConnectionState.CONNECTED), None
+        )
+        assert connected is not None
+        assert connected.warning is None

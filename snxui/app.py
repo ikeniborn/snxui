@@ -38,7 +38,8 @@ def setup_logging(debug: bool = False) -> None:
 class SNXApplication:
     """Основной класс приложения.
 
-    Координирует GTK Application, TrayManager, ProfileManager, SNXBackend.
+    Координирует GTK Application, TrayManager, ProfileManager, CredentialStore.
+    VPN-backend создаётся динамически в HomePage._start_connect через BackendFactory.
     """
 
     def __init__(self, minimized: bool = False) -> None:
@@ -53,10 +54,10 @@ class SNXApplication:
 
         self.profile_manager = ProfileManager()
         self.credential_store = CredentialStore()
-        # NOTE: No SNXBackend instantiated here.  HomePage._start_connect creates
-        # the appropriate backend via BackendFactory.create(profile) and stores it
-        # in HomePage._backend.  Shutdown disconnect is routed through self._home_page
-        # (set in _on_activate) so it always targets the ACTIVE backend instance.
+        # HomePage._start_connect creates the appropriate backend via
+        # BackendFactory.create(profile) and stores it in HomePage._backend.
+        # Shutdown disconnect is routed through self._home_page (set in
+        # _on_activate) so it always targets the ACTIVE backend instance.
         self.tray_manager = TrayManager()
         self.autostart = AutostartManager()
 
@@ -103,12 +104,15 @@ class SNXApplication:
     def _on_shutdown(self, app: object) -> None:
         # Disconnect via HomePage so we always target the active backend
         # instance (BackendFactory.create() is called per-connect and stored in
-        # HomePage._backend).  Calling a stale top-level SNXBackend would
-        # trigger "SNX disconnect command returned unexpectedly (idx=1)" because
-        # that instance was never connected.
+        # HomePage._backend).  The current_backend property exposes the most
+        # recently created backend, avoiding stale references.
         try:
             if self._home_page is not None:
-                self._home_page.do_disconnect()
+                # Call disconnect() synchronously on the *active* backend via
+                # current_backend property — avoids spawning a daemon thread that
+                # may be killed before backend.disconnect() completes, and avoids
+                # GTK widget updates (_apply_disconnecting) during shutdown.
+                self._home_page.current_backend.disconnect()
         except Exception:
             logger.warning("Error during disconnect on shutdown", exc_info=True)
         self.tray_manager.stop()

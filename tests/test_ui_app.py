@@ -202,8 +202,10 @@ class TestSNXApplication:
         assert result == 0
 
     def test_on_shutdown_calls_home_page_disconnect_and_tray_stop(self) -> None:
-        """Shutdown must delegate disconnect to home_page (the active backend holder).
+        """Shutdown must call disconnect() synchronously on the active backend.
 
+        _on_shutdown uses current_backend.disconnect() (synchronous) instead of
+        do_disconnect() (spawns a daemon thread that may be killed before completing).
         Previously shutdown called self.snx_backend.disconnect() on a stale
         SNXBinaryBackend instance that was never connected, causing
         "SNX disconnect command returned unexpectedly (idx=1)" and a double
@@ -211,7 +213,7 @@ class TestSNXApplication:
         """
         app = self._make_app()
         app._on_shutdown(app.app)
-        app._home_page.do_disconnect.assert_called_once()
+        app._home_page.current_backend.disconnect.assert_called_once()
         app.tray_manager.stop.assert_called_once()
 
     def test_on_shutdown_without_home_page_does_not_raise(self) -> None:
@@ -229,7 +231,7 @@ class TestSNXApplication:
     def test_on_shutdown_handles_disconnect_exception(self) -> None:
         """Disconnect error on shutdown must not propagate."""
         app = self._make_app()
-        app._home_page.do_disconnect.side_effect = RuntimeError("backend gone")
+        app._home_page.current_backend.disconnect.side_effect = RuntimeError("backend gone")
         # Should NOT raise.
         app._on_shutdown(app.app)
         app.tray_manager.stop.assert_called_once()

@@ -6,9 +6,9 @@ Run via pkexec under the com.snxui.tun polkit action.
 
 Commands::
 
-    create <iface> <uid> <ip> [<net>/<prefix>...]
+    create <iface> <uid> <ip> [<net>/<prefix>...] [--dns <ip>...]
         Create a persistent user-owned TUN interface, assign IP, bring up,
-        and add routes.
+        add routes, and optionally configure DNS via resolvectl.
 
     destroy <iface>
         Remove the TUN interface (best-effort).
@@ -100,29 +100,40 @@ def _validate_route(route: str) -> str:
 
 
 def cmd_create(args: list[str]) -> None:
-    """create <iface> <uid> <ip> [<net>/<prefix>...]
+    """create <iface> <uid> <ip> [<net>/<prefix>...] [--dns <ip>...]
 
     1. Delete any stale interface with the same name (best-effort).
     2. Create a persistent TUN interface owned by *uid*.
     3. Assign *ip*/32 address.
     4. Set MTU and bring up.
     5. Add each route through the interface.
+    6. Configure DNS via resolvectl when --dns servers are provided.
     """
     if len(args) < 3:
         print(
-            "Usage: snxui-net-helper create <iface> <uid> <ip> [<net>/<prefix>...]",
+            "Usage: snxui-net-helper create <iface> <uid> <ip> [<net>/<prefix>...] [--dns <ip>...]",
             file=sys.stderr,
         )
         sys.exit(1)
 
     iface, uid_str, ip = args[0], args[1], args[2]
-    route_strs = args[3:]
+
+    # Split route_strs and dns_strs on the --dns sentinel.
+    if "--dns" in args[3:]:
+        sep = args.index("--dns", 3)
+        route_strs = args[3:sep]
+        dns_strs = args[sep + 1:]
+    else:
+        route_strs = args[3:]
+        dns_strs = []
 
     # Validate all arguments before touching the system.
     _validate_iface(iface)
     uid = _validate_uid(uid_str)
     _validate_ip(ip)
     validated_routes = [_validate_route(r) for r in route_strs]
+    for d in dns_strs:
+        _validate_ip(d)
 
     # Cleanup stale interface (ignore errors — it may not exist).
     _run(["ip", "link", "delete", iface], check=False)
@@ -140,6 +151,11 @@ def cmd_create(args: list[str]) -> None:
     # Add routes through the tunnel interface (ignore duplicates).
     for route in validated_routes:
         _run(["ip", "route", "add", route, "dev", iface], check=False)
+
+    # Configure DNS via resolvectl when servers were provided.
+    if dns_strs:
+        _run(["resolvectl", "dns", iface] + dns_strs, check=False)
+        _run(["resolvectl", "domain", iface, "~."], check=False)
 
     print("OK")
 
@@ -163,7 +179,7 @@ def main() -> None:
     if len(sys.argv) < 2:
         print(
             "Usage: snxui-net-helper <create|destroy> ...\n"
-            "  create <iface> <uid> <ip> [<net>/<prefix>...]\n"
+            "  create <iface> <uid> <ip> [<net>/<prefix>...] [--dns <ip>...]\n"
             "  destroy <iface>",
             file=sys.stderr,
         )

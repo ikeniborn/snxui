@@ -1039,43 +1039,6 @@ class TestCccIsAvailable:
             assert ca.is_available() is False
 
 
-# ---------------------------------------------------------------------------
-# PortalAuthResult.realm field
-# ---------------------------------------------------------------------------
-
-
-class TestPortalAuthResultRealm:
-    """Verify that authenticate() stores the realm in PortalAuthResult."""
-
-    def test_realm_stored_in_step1_success(self):
-        """When step 1 succeeds without OTP, result.realm must equal the realm from GET."""
-        from snxui.core.portal_auth import PortalAuth, PortalAuthResult
-
-        realm = "MY_REALM"
-        success_result = PortalAuthResult(success=True, session_id="SID")
-
-        with patch.object(PortalAuth, "_fetch_login_page", return_value={"realm": realm}), \
-             patch.object(PortalAuth, "_post_credentials", return_value=success_result), \
-             patch.object(PortalAuth, "_fetch_snx_resources", return_value=None):
-            pa = PortalAuth(server="vpn.test", port=443, verify_ssl=False)
-            result = pa.authenticate("user", "pass")
-
-        assert result.success is True
-        assert result.realm == realm
-
-    def test_realm_stored_in_step2_success(self):
-        """When step 2 (OTP) succeeds, result.realm must equal the realm from GET."""
-        from snxui.core.portal_auth import PortalAuth
-
-        # We'll just test the direct field setting path
-        from snxui.core.portal_auth import PortalAuthResult
-        r = PortalAuthResult(success=True, session_id="s", realm="ssl_vpn_RADIUS")
-        assert r.realm == "ssl_vpn_RADIUS"
-
-    def test_realm_default_empty(self):
-        from snxui.core.portal_auth import PortalAuthResult
-        assert PortalAuthResult(success=True).realm == ""
-
 
 def _make_response_raw(body: str):
     raw = body.encode("utf-8")

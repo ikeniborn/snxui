@@ -108,6 +108,7 @@ class ConnectionStatus:
         interface: Network interface name (typically ``tunsnx``).
         connected_at: Unix timestamp of when the connection was established.
         error_message: Human-readable error description when state is ERROR.
+        warning: Non-None when connected with degraded routing/security (e.g. split-tunnel).
     """
 
     state: ConnectionState = ConnectionState.DISCONNECTED
@@ -116,3 +117,4 @@ class ConnectionStatus:
     interface: Optional[str] = None
     connected_at: Optional[float] = None
     error_message: Optional[str] = None
+    warning: Optional[str] = None  # Non-None when connected with degraded routing/security

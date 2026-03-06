@@ -687,13 +687,13 @@ class CCCAuth:
         if raw:
             active_key = _snx_deobfuscate(raw)
             logger.info(
-                "CCC %s: active_key obtained (%.12s…, %d chars)",
-                stage, active_key, len(active_key),
+                "CCC %s: active_key obtained (%d chars)",
+                stage, len(active_key),
             )
             return active_key
         logger.warning(
             "CCC %s: return_code=0 but no active_key found in response. "
-            "Full response: %r", stage, response[:400],
+            "Full response: %r", stage, _redact_ccc(response[:400]),
         )
         return None
 

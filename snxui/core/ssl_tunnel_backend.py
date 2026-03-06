@@ -297,12 +297,25 @@ class PythonSSLBackend(VPNBackend):
                 self._tunnel = None
             return False
 
-        # 7. Notify CONNECTED.
+        # 7. Detect split-tunnel mode and notify CONNECTED.
+        # Full-tunnel via single 0.0.0.0/0 route OR via the classic two-/1
+        # pattern (0.0.0.0/1 + 128.0.0.0/1 together cover the entire address
+        # space and are functionally equivalent to a default route).
+        route_set = {(net, prefix) for net, prefix in config.routes}
+        has_default_route = (
+            ("0.0.0.0", "0") in route_set
+            or (("0.0.0.0", "1") in route_set and ("128.0.0.0", "1") in route_set)
+        )
+        conn_warning = (
+            None if has_default_route else
+            "Split-tunnel mode: only corporate routes go through VPN — other traffic uses your ISP"
+        )
         notify(ConnectionStatus(
             state=ConnectionState.CONNECTED,
             profile=profile,
             ip_address=config.assigned_ip,
             interface=_TUN_IFACE,
+            warning=conn_warning,
         ))
 
         # 8. Run packet loop — blocks until disconnect or error.

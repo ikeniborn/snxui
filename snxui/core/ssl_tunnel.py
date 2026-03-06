@@ -62,6 +62,22 @@ _IFACE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,15}$")
 # Prevents a hostile gateway from freezing the packet loop indefinitely.
 _MAX_KEEPALIVE_SECS = 300
 
+# Maximum SLIM frame payload size (bytes).
+# Control frames (S-expressions) and data frames (IP packets) are both bounded
+# by this limit.  A well-behaved gateway never exceeds _MAX_PACKET; rejecting
+# larger frames prevents memory exhaustion from a misbehaving/malicious gateway.
+_MAX_FRAME_SIZE = _MAX_PACKET  # 65536 bytes
+
+# Maximum number of buffered TLS frames drained per packet-loop iteration.
+# Prevents an infinite drain loop when the gateway streams data continuously.
+_MAX_DRAIN = 64
+
+# TUN ioctl constants (from <linux/if_tun.h>)
+# TUNSETPERSIST clears the persistent flag so the interface is destroyed when
+# the last file descriptor referencing it is closed.  The holder of an open
+# tuntap fd may clear persistence without CAP_NET_ADMIN — no pkexec required.
+_TUNSETPERSIST = 0x400454CB
+
 # Path to the privileged helper script installed by 'make install-helper'.
 # Invoked via pkexec for TUN interface creation and teardown.
 _NET_HELPER = "/usr/lib/snxui/snxui-net-helper"
@@ -256,6 +272,7 @@ class SSLTunnel:
            * Create a persistent user-owned TUN device via ``ip tuntap add``.
            * Assign the IP address and bring the interface up.
            * Add all VPN routes.
+           * Configure DNS via ``resolvectl`` when ``dns_servers`` is non-empty.
 
         3. Opens ``/dev/net/tun`` and calls ``TUNSETIFF`` — allowed without
            ``CAP_NET_ADMIN`` because the device is owned by the current user.
@@ -281,14 +298,26 @@ class SSLTunnel:
             raise ValueError(f"Invalid interface name: {iface!r}")
 
         route_args = [f"{net}/{prefix}" for net, prefix in config.routes]
+
+        valid_dns: list[str] = []
+        for dns in config.dns_servers:
+            try:
+                socket.inet_aton(dns)
+                valid_dns.append(dns)
+            except OSError:
+                logger.warning(
+                    "configure_net: ignoring invalid DNS server IP: %r", dns
+                )
+        dns_args = ["--dns"] + valid_dns if valid_dns else []
+
         cmd = [
             "pkexec", _NET_HELPER, "create", iface,
             str(os.getuid()), config.assigned_ip,
-        ] + route_args
+        ] + route_args + dns_args
 
         logger.info(
-            "TUN interface %s: invoking helper via pkexec (ip=%s routes=%d)",
-            iface, config.assigned_ip, len(config.routes),
+            "TUN interface %s: invoking helper via pkexec (ip=%s routes=%d dns=%d)",
+            iface, config.assigned_ip, len(config.routes), len(valid_dns),
         )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
@@ -360,7 +389,11 @@ class SSLTunnel:
                 # ssl.SSLSocket.pending() counts already-decrypted bytes — the
                 # underlying socket fd may not be readable even when data is
                 # ready, so we must drain first.
-                while self._ssl_sock.pending() > 0:
+                # Limit iterations to avoid an infinite loop if the gateway
+                # streams data continuously without pausing.
+                for _ in range(_MAX_DRAIN):
+                    if self._ssl_sock.pending() <= 0:
+                        break
                     try:
                         ftype, payload = self._recv_slim()
                         self._handle_incoming(ftype, payload)
@@ -508,6 +541,11 @@ class SSLTunnel:
         """
         header = self._recv_exact(8)
         length, ftype = struct.unpack(">II", header)
+        if length > _MAX_FRAME_SIZE:
+            raise RuntimeError(
+                f"SLIM frame too large: {length} bytes (max {_MAX_FRAME_SIZE}). "
+                "Possible protocol error or malicious gateway."
+            )
         payload = self._recv_exact(length)
         if ftype == _SLIM_CONTROL:
             payload = payload.removesuffix(b"\x00")
@@ -790,24 +828,31 @@ class SSLTunnel:
     # ------------------------------------------------------------------
 
     def _teardown_net(self) -> None:
-        """Remove the TUN interface via the privileged helper (best-effort).
+        """Clear the TUN persistent flag so the interface is removed when the fd closes.
 
-        Called from the ``finally`` block of :meth:`run_packet_loop`.
+        Called from the ``finally`` block of :meth:`run_packet_loop` while
+        ``self._tun_fd`` is still open.  :meth:`close` closes the fd
+        immediately after, which causes the kernel to destroy the interface
+        automatically — removing all associated routes and per-interface DNS
+        configuration (systemd-resolved monitors interface events).
+
+        No ``pkexec`` is needed: the holder of an open tuntap fd may call
+        ``TUNSETPERSIST 0`` without ``CAP_NET_ADMIN``.  This avoids the polkit
+        password prompt that the previous ``pkexec destroy`` approach triggered.
+
         Errors are logged but never re-raised — teardown must not mask the
         original disconnect reason.
         """
-        if not self._iface_name:
+        if self._tun_fd < 0:
             return
-        logger.info("SSL tunnel: removing interface %r via helper", self._iface_name)
+        logger.info(
+            "SSL tunnel: clearing persistent flag on %r (interface removed on fd close)",
+            self._iface_name,
+        )
         try:
-            subprocess.run(
-                ["pkexec", _NET_HELPER, "destroy", self._iface_name],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except Exception as exc:
+            fcntl.ioctl(self._tun_fd, _TUNSETPERSIST, struct.pack("I", 0))
+        except OSError as exc:
             logger.warning(
-                "SSL tunnel: _teardown_net failed for %r: %s",
+                "SSL tunnel: TUNSETPERSIST 0 failed for %r: %s",
                 self._iface_name, exc,
             )

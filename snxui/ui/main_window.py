@@ -251,7 +251,7 @@ class MainWindow:
             self._tray_popover.popdown()
 
         try:
-            state = self._snx_backend.get_cached_status().state
+            state = self._home_page.current_backend.get_cached_status().state
         except Exception:
             state = ConnectionState.DISCONNECTED
 
