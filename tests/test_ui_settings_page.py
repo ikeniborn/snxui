@@ -3,7 +3,7 @@
 GTK4/Libadwaita are mocked so tests run without a display or GTK installation.
 
 Covers:
-- Static helpers _find_snx_binary() and _check_polkit() (pure Python, no GTK)
+- Static helpers _check_polkit() and _check_net_helper() (pure Python, no GTK)
 - _on_autostart_toggled() re-entrancy guard
 - _on_scheme_changed() out-of-bounds index protection
 - minimize_to_tray property
@@ -67,47 +67,40 @@ def _make_page(autostart_enabled: bool = False):
 
 
 # ---------------------------------------------------------------------------
-# _find_snx_binary() — pure Python static method
+# _check_net_helper() — pure Python static method
 # ---------------------------------------------------------------------------
 
 
-class TestFindSnxBinary:
-    def test_returns_path_when_found_at_usr_bin(self) -> None:
+class TestCheckNetHelper:
+    def test_returns_path_and_true_when_helper_exists(self, tmp_path) -> None:
         from snxui.ui.settings_page import SettingsPage
 
-        with patch("snxui.ui.settings_page.shutil.which",
-                   side_effect=lambda p: p if p == "/usr/bin/snx" else None):
-            result = SettingsPage._find_snx_binary()
+        helper = tmp_path / "snxui-net-helper"
+        helper.touch()
+        with patch("snxui.ui.settings_page.Path", return_value=helper):
+            result_path, ok = SettingsPage._check_net_helper()
 
-        assert result == "/usr/bin/snx"
+        assert ok is True
+        assert "snxui-net-helper" in result_path
 
-    def test_returns_path_when_found_at_usr_local_bin(self) -> None:
-        """Falls through /usr/bin/snx and finds it at /usr/local/bin/snx."""
+    def test_returns_not_found_and_false_when_missing(self, tmp_path) -> None:
         from snxui.ui.settings_page import SettingsPage
 
-        with patch("snxui.ui.settings_page.shutil.which",
-                   side_effect=lambda p: p if p == "/usr/local/bin/snx" else None):
-            result = SettingsPage._find_snx_binary()
+        missing = tmp_path / "snxui-net-helper"  # не создаём
+        with patch("snxui.ui.settings_page.Path", return_value=missing):
+            result_path, ok = SettingsPage._check_net_helper()
 
-        assert result == "/usr/local/bin/snx"
+        assert ok is False
+        assert "Not found" in result_path
 
-    def test_falls_back_to_which_snx(self) -> None:
-        """When neither candidate path exists, tries shutil.which('snx')."""
+    def test_subtitle_contains_reinstall_hint_when_missing(self, tmp_path) -> None:
         from snxui.ui.settings_page import SettingsPage
 
-        with patch("snxui.ui.settings_page.shutil.which",
-                   side_effect=lambda p: "/opt/custom/snx" if p == "snx" else None):
-            result = SettingsPage._find_snx_binary()
+        missing = tmp_path / "snxui-net-helper"
+        with patch("snxui.ui.settings_page.Path", return_value=missing):
+            result_path, _ = SettingsPage._check_net_helper()
 
-        assert result == "/opt/custom/snx"
-
-    def test_returns_not_found_when_absent(self) -> None:
-        from snxui.ui.settings_page import SettingsPage
-
-        with patch("snxui.ui.settings_page.shutil.which", return_value=None):
-            result = SettingsPage._find_snx_binary()
-
-        assert result == "Not found"
+        assert "reinstall" in result_path.lower()
 
 
 # ---------------------------------------------------------------------------
