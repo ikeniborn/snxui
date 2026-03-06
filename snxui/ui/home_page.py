@@ -97,12 +97,16 @@ class HomePage:
         self._status_label = Gtk.Label(label="Disconnected")
         self._status_label.add_css_class("title-2")
         self._status_label.set_margin_bottom(4)
+        self._status_label.set_wrap(True)
+        self._status_label.set_max_width_chars(42)
+        self._status_label.set_justify(Gtk.Justification.CENTER)
 
         self._info_label = Gtk.Label(label="")
         self._info_label.add_css_class("caption")
         self._info_label.set_opacity(0.6)
         self._info_label.set_margin_bottom(16)
         self._info_label.set_wrap(True)
+        self._info_label.set_max_width_chars(48)
         self._info_label.set_justify(Gtk.Justification.CENTER)
         self._info_label.set_visible(False)
 
@@ -303,11 +307,12 @@ class HomePage:
         err = status.error_message or "Unknown error"
         self._current_error = err  # stored for clipboard copy
 
-        # Line 0 → title in UI.  Line 1 → subtitle in UI.
-        # Lines 2+ (command, raw output) → clipboard only, not shown.
-        lines = err.strip().splitlines()
-        title_line = lines[0] if lines else err
-        detail_line = lines[1].strip() if len(lines) > 1 else ""
+        # First non-empty line → title in UI.
+        # Second non-empty line → subtitle in UI (skips blank paragraph separators).
+        # Remaining lines (command, raw output) → clipboard only, not shown.
+        non_empty = [l.strip() for l in err.strip().splitlines() if l.strip()]
+        title_line = non_empty[0] if non_empty else err
+        detail_line = non_empty[1] if len(non_empty) > 1 else ""
 
         self._status_label.set_label(f"Error: {title_line}")
         if detail_line:

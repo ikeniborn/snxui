@@ -482,26 +482,16 @@ class TestBackendFactory:
              pytest.raises(RuntimeError, match="snx-rs/snxctl is not found"):
             BackendFactory.create(profile)
 
-    def test_auto_prefers_snx_rs(self) -> None:
+    def test_auto_uses_python_ssl(self) -> None:
+        """'auto' now resolves to PythonSSLBackend — no snx-rs or snx binary needed."""
         from snxui.core.vpn_backend import BackendFactory
+        from snxui.core.ssl_tunnel_backend import PythonSSLBackend
 
         profile = Profile(
             name="Test", server="vpn.example.com", username="alice", backend="auto",
         )
-        with patch("snxui.core.vpn_backend.detect_snx_rs", return_value=True):
-            b = BackendFactory.create(profile)
-        assert isinstance(b, SNXRsBackend)
-
-    def test_auto_falls_back_to_snx_binary(self) -> None:
-        from snxui.core.vpn_backend import BackendFactory
-        from snxui.core.snx_backend import SNXBinaryBackend
-
-        profile = Profile(
-            name="Test", server="vpn.example.com", username="alice", backend="auto",
-        )
-        with patch("snxui.core.vpn_backend.detect_snx_rs", return_value=False):
-            b = BackendFactory.create(profile)
-        assert isinstance(b, SNXBinaryBackend)
+        b = BackendFactory.create(profile)
+        assert isinstance(b, PythonSSLBackend)
 
     def test_snx_backend_creates_snx_binary_backend(self) -> None:
         from snxui.core.vpn_backend import BackendFactory

@@ -85,6 +85,7 @@ class Profile:
     save_totp_secret: bool = False
     combined_auth: bool = False         # Append OTP to password (servers without interactive OTP prompt)
     portal_auth: bool = False           # Use HTTPS portal auth before SNX (servers requiring browser flow)
+    ccc_only_auth: bool = False         # Skip portal, authenticate directly via CCC /clients/ endpoint
     portal_reconnect_mode: bool = False  # Use SNX -r (reconnect) flag after portal auth writes ~/.snxrc
     tunnel_type: TunnelType = TunnelType.SSL
     esp_settings: Optional[str] = None  # e.g. "aes256-sha256" — IPSec mode only

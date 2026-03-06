@@ -1,0 +1,185 @@
+#!/usr/bin/python3
+"""snxui-net-helper — privileged TUN interface management for snxui.
+
+Installed at /usr/lib/snxui/snxui-net-helper (root:root, 0755).
+Run via pkexec under the com.snxui.tun polkit action.
+
+Commands::
+
+    create <iface> <uid> <ip> [<net>/<prefix>...]
+        Create a persistent user-owned TUN interface, assign IP, bring up,
+        and add routes.
+
+    destroy <iface>
+        Remove the TUN interface (best-effort).
+
+All arguments are strictly validated before any subprocess call.
+No shell=True is used anywhere.
+"""
+
+import re
+import socket
+import subprocess
+import sys
+
+# Valid Linux interface name: 1–15 alphanumeric, hyphen, or underscore chars.
+_IFACE_RE = re.compile(r"^[a-zA-Z0-9_-]{1,15}$")
+# MTU used by Check Point SNX VPN
+_TUN_MTU = 1350
+
+
+def _run(cmd: list[str], check: bool = True) -> int:
+    """Run *cmd* without a shell.  Returns the exit code.
+
+    Args:
+        cmd:   Command + arguments list — never passed through a shell.
+        check: When True, print the error and exit(1) on non-zero return.
+    """
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        print(
+            f"Command failed ({result.returncode}): {' '.join(cmd)}\n"
+            f"{(result.stderr or result.stdout or '').strip()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return result.returncode
+
+
+def _validate_iface(iface: str) -> None:
+    """Exit with status 1 if *iface* is not a valid Linux interface name."""
+    if not _IFACE_RE.match(iface):
+        print(
+            f"Invalid interface name: {iface!r} "
+            "(must be 1–15 alphanumeric/hyphen/underscore characters).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _validate_uid(uid_str: str) -> int:
+    """Parse and return UID, exiting with status 1 on invalid input."""
+    try:
+        uid = int(uid_str)
+        if not (0 <= uid <= 1_048_576):
+            raise ValueError("out of range")
+        return uid
+    except ValueError:
+        print(f"Invalid UID: {uid_str!r} (must be an integer 0–1048576).", file=sys.stderr)
+        sys.exit(1)
+
+
+def _validate_ip(ip: str) -> None:
+    """Exit with status 1 if *ip* is not a valid IPv4 address."""
+    try:
+        socket.inet_aton(ip)
+    except OSError:
+        print(f"Invalid IP address: {ip!r}.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _validate_route(route: str) -> str:
+    """Validate and return a ``net/prefix`` route string, exiting on error."""
+    parts = route.split("/")
+    if len(parts) != 2:
+        print(
+            f"Invalid route {route!r}: expected <network>/<prefix_len>.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    net, prefix_str = parts
+    try:
+        socket.inet_aton(net)
+        prefix = int(prefix_str)
+        if not (0 <= prefix <= 32):
+            raise ValueError("prefix out of range")
+    except (OSError, ValueError):
+        print(f"Invalid route {route!r}.", file=sys.stderr)
+        sys.exit(1)
+    return f"{net}/{prefix_str}"
+
+
+def cmd_create(args: list[str]) -> None:
+    """create <iface> <uid> <ip> [<net>/<prefix>...]
+
+    1. Delete any stale interface with the same name (best-effort).
+    2. Create a persistent TUN interface owned by *uid*.
+    3. Assign *ip*/32 address.
+    4. Set MTU and bring up.
+    5. Add each route through the interface.
+    """
+    if len(args) < 3:
+        print(
+            "Usage: snxui-net-helper create <iface> <uid> <ip> [<net>/<prefix>...]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    iface, uid_str, ip = args[0], args[1], args[2]
+    route_strs = args[3:]
+
+    # Validate all arguments before touching the system.
+    _validate_iface(iface)
+    uid = _validate_uid(uid_str)
+    _validate_ip(ip)
+    validated_routes = [_validate_route(r) for r in route_strs]
+
+    # Cleanup stale interface (ignore errors — it may not exist).
+    _run(["ip", "link", "delete", iface], check=False)
+
+    # Create persistent TUN device owned by uid.  The owning process can open
+    # /dev/net/tun and call TUNSETIFF without CAP_NET_ADMIN.
+    _run(["ip", "tuntap", "add", "dev", iface, "mode", "tun", "user", str(uid)])
+
+    # Assign the IP address as a /32 host address.
+    _run(["ip", "addr", "add", f"{ip}/32", "dev", iface])
+
+    # Set MTU and bring the interface up.
+    _run(["ip", "link", "set", iface, "mtu", str(_TUN_MTU), "up"])
+
+    # Add routes through the tunnel interface (ignore duplicates).
+    for route in validated_routes:
+        _run(["ip", "route", "add", route, "dev", iface], check=False)
+
+    print("OK")
+
+
+def cmd_destroy(args: list[str]) -> None:
+    """destroy <iface>
+
+    Remove the named TUN interface (best-effort).
+    """
+    if len(args) < 1:
+        print("Usage: snxui-net-helper destroy <iface>", file=sys.stderr)
+        sys.exit(1)
+
+    iface = args[0]
+    _validate_iface(iface)
+    _run(["ip", "link", "delete", iface], check=False)
+    print("OK")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print(
+            "Usage: snxui-net-helper <create|destroy> ...\n"
+            "  create <iface> <uid> <ip> [<net>/<prefix>...]\n"
+            "  destroy <iface>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    command = sys.argv[1]
+    cmd_args = sys.argv[2:]
+
+    if command == "create":
+        cmd_create(cmd_args)
+    elif command == "destroy":
+        cmd_destroy(cmd_args)
+    else:
+        print(f"Unknown command: {command!r}. Use 'create' or 'destroy'.", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

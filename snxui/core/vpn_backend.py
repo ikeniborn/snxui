@@ -10,6 +10,8 @@ Available backends:
       (snx-rs / snxctl), uses CCC protocol natively, supports IPSec.
     * :class:`~snxui.core.snx_backend.SNXBinaryBackend` — /usr/bin/snx
       via pexpect PTY automation.
+    * :class:`~snxui.core.ssl_tunnel_backend.PythonSSLBackend` — pure
+      Python CCC auth + SLIM SSL tunnel, no external binaries required.
 """
 
 from __future__ import annotations
@@ -104,10 +106,11 @@ class BackendFactory:
 
     Selection logic (``profile.backend``):
 
-    * ``"snx_rs"``  — always use :class:`~snxui.core.snx_rs_backend.SNXRsBackend`.
-    * ``"snx"``     — always use :class:`~snxui.core.snx_backend.SNXBinaryBackend`.
-    * ``"auto"``    — prefer snx-rs if ``snx-rs``/``snxctl`` are in PATH, else fall back to
-      the SNX binary.
+    * ``"snx_rs"``     — always use :class:`~snxui.core.snx_rs_backend.SNXRsBackend`.
+    * ``"snx"``        — always use :class:`~snxui.core.snx_backend.SNXBinaryBackend`.
+    * ``"python_ssl"`` — always use
+      :class:`~snxui.core.ssl_tunnel_backend.PythonSSLBackend`.
+    * ``"auto"``       — maps to ``"python_ssl"`` (pure Python, no binaries).
     """
 
     @staticmethod
@@ -138,10 +141,6 @@ class BackendFactory:
             from .snx_backend import SNXBinaryBackend
             return SNXBinaryBackend()
 
-        # "auto" — prefer snx-rs
-        if detect_snx_rs():
-            from .snx_rs_backend import SNXRsBackend
-            return SNXRsBackend()
-
-        from .snx_backend import SNXBinaryBackend
-        return SNXBinaryBackend()
+        # "auto" and "python_ssl" both use the pure Python SSL backend.
+        from .ssl_tunnel_backend import PythonSSLBackend
+        return PythonSSLBackend()

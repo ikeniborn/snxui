@@ -21,6 +21,9 @@ override_dh_auto_install:
 	    --prefix=/usr \
 	    --no-compile \
 	    .
+	# Установить привилегированный хелпер (используется pkexec для создания TUN)
+	install -Dm755 snxui/helpers/snxui-net-helper \
+	    $(CURDIR)/debian/snxui/usr/lib/snxui/snxui-net-helper
 	# Установить polkit policy
 	install -Dm644 snxui/data/com.snxui.policy \
 	    $(CURDIR)/debian/snxui/usr/share/polkit-1/actions/com.snxui.policy

@@ -23,11 +23,13 @@ unexpected disconnections.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
 import threading
 import time
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -174,6 +176,43 @@ def _clear_snxrc() -> None:
         logger.debug("Failed to delete ~/.snxrc", exc_info=True)
 
 
+def _write_snxrc_active_key(server: str, active_key: str) -> bool:
+    """Write CCC ``active_key`` as ``auth_id`` in ``~/.snxrc`` for SNX ``-r`` mode.
+
+    Uses :func:`os.open` with ``O_CREAT|O_TRUNC`` and mode ``0o600`` in a
+    single atomic call to avoid the TOCTOU race that ``write_text`` + ``chmod``
+    would introduce.
+
+    Args:
+        server:     Gateway hostname / IP (written as ``gateway`` field).
+        active_key: CCC active_key hex string returned by :class:`CCCAuth`.
+
+    Returns:
+        ``True`` on success, ``False`` if the file could not be written.
+    """
+    content = f'gateway="{server}"\nauth_id="{active_key}"\n'
+    encoded = content.encode("utf-8")
+    try:
+        fd = os.open(
+            str(_SNXRC_PATH),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+        )
+        try:
+            os.write(fd, encoded)
+        finally:
+            os.close(fd)
+        logger.info(
+            "CCC-only auth: wrote active_key (%.12s…) to %s",
+            active_key,
+            _SNXRC_PATH,
+        )
+        return True
+    except OSError as exc:
+        logger.error("CCC-only auth: cannot write %s: %s", _SNXRC_PATH, exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # PTY output logger
 # ---------------------------------------------------------------------------
@@ -245,6 +284,13 @@ class SNXBinaryBackend(VPNBackend):
         # use — otherwise /SNX/ReLogin rejects the session token and reports
         # "Connection aborted".  When False, SNX falls back to regular PTY auth.
         self._ccc_auth_ok: bool = False
+        # Set to True by _run_ccc_only_auth() when CCC auth succeeded without
+        # portal pre-authentication (ccc_only_auth=True mode).
+        self._ccc_only_auth_ok: bool = False
+        # Set to True when the CCC-only auth phase required an OTP.
+        # Used to improve the error message if the SNX binary is subsequently
+        # rejected by the server (indicates RADIUS consumed OTP in CCC phase).
+        self._ccc_only_otp_used: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -282,6 +328,8 @@ class SNXBinaryBackend(VPNBackend):
         self._portal_credentials_failed = False
         self._portal_auth_ok = False
         self._ccc_auth_ok = False
+        self._ccc_only_auth_ok = False
+        self._ccc_only_otp_used = False
         binary = self._find_snx_binary()
         with self._lock:
             snapshot = self._update_status(
@@ -289,7 +337,34 @@ class SNXBinaryBackend(VPNBackend):
             )
         self._invoke_callback(status_callback, snapshot)
 
-        if profile.portal_auth:
+        if profile.ccc_only_auth:
+            ok, cached_ccc_otp = self._run_ccc_only_auth(
+                profile, password, status_callback, two_factor_callback
+            )
+            if ok is not None:
+                return ok
+            # ok=None → CCC succeeded; _ccc_only_auth_ok=True, ~/.snxrc cleared.
+            # _build_args() launches SNX without -r; SNX handles its own auth.
+            # Wrap two_factor_callback so the cached OTP is tried first (works for
+            # TOTP where the same 30-second code is still valid; for RADIUS HOTP the
+            # server rejects the reused code, the loop retries and shows the dialog).
+            if cached_ccc_otp and two_factor_callback is not None:
+                _orig_two_factor_cb = two_factor_callback
+                _ccc_otp_once: list[Optional[str]] = [cached_ccc_otp]
+
+                def _one_shot_ccc_callback(prompt_text: str) -> Optional[str]:
+                    if _ccc_otp_once:
+                        code = _ccc_otp_once.pop(0)
+                        logger.debug(
+                            "SNX PTY 2FA: trying cached CCC OTP first "
+                            "(works for TOTP; RADIUS HOTP will prompt again if rejected)."
+                        )
+                        return code
+                    return _orig_two_factor_cb(prompt_text)
+
+                two_factor_callback = _one_shot_ccc_callback
+
+        elif profile.portal_auth:
             ok, cached_otp = self._run_portal_auth(profile, password, status_callback, two_factor_callback)
             if ok is not None:
                 return ok
@@ -322,6 +397,21 @@ class SNXBinaryBackend(VPNBackend):
                     "The cached OTP is STALE (RADIUS one-time-use); "
                     "SNX will prompt for a fresh OTP via the 2FA dialog."
                 )
+                if profile.combined_auth:
+                    # combined_auth appends OTP to password in a single SNX PTY send.
+                    # When portal auth consumed OTP1 and CCC then failed, servers that
+                    # require CCC for reconnect (snx_relogin=0) consistently reject
+                    # combined creds — either the realm doesn't support combined format
+                    # or the RADIUS OTP step was already satisfied by the portal.
+                    # Disable combined_auth so SNX PTY sends the plain password and lets
+                    # the server issue a fresh OTP challenge via a normal PTY prompt.
+                    # Recommendation: switch to ccc_only_auth=True for this server.
+                    logger.warning(
+                        "portal_auth + CCC failure: disabling combined_auth for SNX PTY "
+                        "fallback — servers with snx_relogin=0 reject combined creds. "
+                        "Consider using ccc_only_auth=True with login_type set."
+                    )
+                    profile = _dc_replace(profile, combined_auth=False)
 
         args = self._build_args(profile)
         # use_reconnect=True only when -r is actually in args (portal_reconnect_mode=True).
@@ -815,6 +905,12 @@ class SNXBinaryBackend(VPNBackend):
                 # sent is True → code was sent, continue loop
                 continue
 
+            # idx 3 = _RE_AUTH_FAILED — specialize for ccc_only_auth mode.
+            if idx == 3 and profile.ccc_only_auth and self._ccc_only_auth_ok:
+                return self._handle_ccc_only_snx_auth_failed(
+                    child, profile, callback, full_output
+                )
+
             # idx 3,4,5,6 → map to legacy indices 1,2,3,4 for _handle_connect_failure
             return self._handle_connect_failure(child, profile, callback, idx - 2, full_output)
 
@@ -901,6 +997,74 @@ class SNXBinaryBackend(VPNBackend):
                 ConnectionState.ERROR,
                 profile=profile,
                 error_message="Too many 2FA rounds — connection aborted.",
+            )
+        child.close()
+        self._invoke_callback(callback, snapshot)
+        return False
+
+    def _handle_ccc_only_snx_auth_failed(
+        self,
+        child: "pexpect.spawn",
+        profile: Profile,
+        callback: Optional[Callable[[ConnectionStatus], None]],
+        full_output: str,
+    ) -> bool:
+        """Report an actionable error when CCC-only auth succeeded but SNX binary fails.
+
+        This happens on RADIUS servers where the SNX binary cannot handle
+        RADIUS MultiChallenge authentication internally.  Two common causes:
+
+        1. The RADIUS OTP was consumed during the CCC phase — the SNX binary's
+           own internal CCC/RADIUS exchange fails because the OTP is spent.
+        2. The server requires ``password+OTP`` in a combined field — the SNX
+           binary receives only the plain password and the server rejects it.
+        3. The SNX binary does not support RADIUS MultiChallenge at all on
+           this server.
+
+        Recommended action: switch to the ``snx-rs`` backend, which handles
+        CCC + tunnel establishment natively without the SNX binary.
+        """
+        logger.error(
+            "CCC-only auth: SNX binary rejected by server after successful CCC. "
+            "OTP was%s consumed in CCC phase. Output: %r",
+            "" if self._ccc_only_otp_used else " NOT",
+            full_output[:200],
+        )
+
+        if profile.combined_auth and self._ccc_only_otp_used:
+            # combined_auth was already tried with a fresh OTP and still failed.
+            # The server does not support SNX binary auth for this RADIUS realm
+            # at all — only the snx-rs backend can establish the tunnel.
+            error_message = (
+                "CCC authentication succeeded but the SNX binary was rejected "
+                "even with 'Combined auth' and a fresh OTP.\n\n"
+                "This server does not support SNX binary authentication for "
+                "this realm. Switch to the 'snx-rs' backend in profile settings."
+            )
+        elif self._ccc_only_otp_used:
+            error_message = (
+                "The server used a one-time password (OTP) during CCC validation. "
+                "The SNX binary then failed — the OTP was likely consumed in the "
+                "CCC phase and rejected when the SNX binary tried to use it again."
+                "\n\nRecommended fixes:\n"
+                "1. Switch to the 'snx-rs' backend in profile settings (handles "
+                "RADIUS natively without the SNX binary).\n"
+                "2. Or enable 'Combined auth' — the SNX binary may accept "
+                "OTP appended to the password field (needs a fresh OTP)."
+            )
+        else:
+            error_message = (
+                "CCC authentication validated credentials but the SNX binary "
+                "was rejected by the server after sending the password."
+                "\n\nRecommended fix: switch to the 'snx-rs' backend in "
+                "profile settings."
+            )
+
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message=error_message,
             )
         child.close()
         self._invoke_callback(callback, snapshot)
@@ -1213,6 +1377,136 @@ class SNXBinaryBackend(VPNBackend):
         self._invoke_callback(status_callback, snapshot)
         return False, None
 
+    def _run_ccc_only_auth(
+        self,
+        profile: Profile,
+        password: str,
+        status_callback: Optional[Callable[[ConnectionStatus], None]],
+        two_factor_callback: Optional[TwoFactorCallback],
+    ) -> tuple[Optional[bool], Optional[str]]:
+        """Authenticate directly via CCC ``/clients/`` without a portal pre-step.
+
+        Sends ``ClientHello → UserPass → MultiChallange`` to the Check Point
+        CCC endpoint to validate credentials and handle OTP in the CCC dialog.
+        On success, ``~/.snxrc`` is **cleared** (not written) so the SNX binary
+        performs its own full authentication without interference.
+
+        The OTP code that was entered (or auto-generated for TOTP) during CCC
+        is returned to the caller so it can be tried first when the SNX binary
+        subsequently prompts for 2FA:
+        * **TOTP** (time-based, 30-second codes): the same code is usually still
+          valid — the SNX PTY succeeds without showing a dialog.
+        * **RADIUS / HOTP** (event-based one-time codes): the server rejects the
+          reused code; the 2FA loop retries and shows the dialog so the user can
+          enter a fresh token.
+
+        Called when ``profile.ccc_only_auth=True``.  ``profile.login_type``
+        is the realm name (e.g. ``vpn_ssl_vpn``); if empty, auto-discovered.
+
+        Returns:
+            ``(None, otp_used)``  — CCC auth succeeded; ``_ccc_only_auth_ok``
+            is set to ``True``.  Caller proceeds to launch the SNX PTY (no
+            ``-r``).  *otp_used* is the OTP value that was submitted to CCC,
+            or ``None`` if no OTP was required.
+
+            ``(False, None)``  — CCC auth failed; error state has been set and
+            ``status_callback`` has been invoked.
+        """
+        from .ccc_auth import CCCAuth, discover_login_options
+
+        login = (
+            f"{profile.domain}\\{profile.username}"
+            if profile.domain
+            else profile.username
+        )
+        realm = profile.login_type
+        if not realm:
+            # Auto-discover the realm (login type) from the server's ServerHello.
+            # The server includes a login_options_list in its CCC ClientHello response.
+            options = discover_login_options(
+                profile.server,
+                port=profile.ssl_port,
+                verify_ssl=not profile.ignore_server_cert,
+            )
+            if options:
+                realm = options[0][0]
+                logger.info(
+                    "CCC-only auth: auto-discovered login_type=%r "
+                    "(available: %s)",
+                    realm,
+                    ", ".join(f"{id_!r}" for id_, _ in options),
+                )
+            else:
+                logger.warning(
+                    "CCC-only auth: profile.login_type is empty and auto-discovery "
+                    "returned no options for %s — proceeding without realm "
+                    "(some servers accept this).",
+                    profile.server,
+                )
+
+        logger.info(
+            "CCC-only auth: starting for user=%r realm=%r on %s:%d",
+            login, realm, profile.server, profile.ssl_port,
+        )
+
+        # Wrap otp_callback to capture the OTP code for reuse in the SNX PTY.
+        _otp_used: list[str] = []
+
+        def _capturing_otp_callback(prompt_text: str) -> Optional[str]:
+            code = two_factor_callback(prompt_text) if two_factor_callback else None
+            if code:
+                _otp_used.append(code)
+            return code
+
+        ccc = CCCAuth(
+            server=profile.server,
+            port=profile.ssl_port,
+            verify_ssl=not profile.ignore_server_cert,
+        )
+        active_key = ccc.authenticate(
+            username=login,
+            password=password,
+            realm=realm,
+            otp_callback=_capturing_otp_callback,
+        )
+
+        if active_key:
+            # Clear ~/.snxrc so the SNX binary performs clean regular auth.
+            # Writing active_key as auth_id causes "Connection aborted" because
+            # servers interpret it as a CCC tunnel token (snx-rs protocol),
+            # not as an OTP-skip signal for the SNX binary's HTTP auth path.
+            _clear_snxrc()
+            self._ccc_only_auth_ok = True
+            otp_used = _otp_used[0] if _otp_used else None
+            self._ccc_only_otp_used = otp_used is not None
+            logger.info(
+                "CCC-only auth: succeeded — ~/.snxrc cleared, SNX will do full PTY auth. "
+                "Cached OTP will be tried first in SNX PTY (works for TOTP)."
+            )
+            return None, otp_used
+
+        # Differentiate wrong-password (rc=14) from wrong-OTP / other CCC errors.
+        # Only credentials_rejected=True should trigger keyring deletion in the UI
+        # (via _is_auth_failure matching "authentication failed").  Wrong OTP does NOT
+        # mean the stored password is wrong — deleting it is confusing and incorrect.
+        if ccc.credentials_rejected:
+            error_message = "Authentication failed — check username and password."
+            logger.error("CCC-only auth: wrong credentials (password rejected by server).")
+        else:
+            error_message = "CCC authentication error — verify OTP code and login type."
+            logger.error(
+                "CCC-only auth failed: no active_key returned by CCC endpoint. "
+                "Check login_type, credentials, and server CCC configuration."
+            )
+        with self._lock:
+            snapshot = self._update_status(
+                ConnectionState.ERROR,
+                profile=profile,
+                error_message=error_message,
+            )
+        self._invoke_callback(status_callback, snapshot)
+        return False, None
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -1262,8 +1556,29 @@ class SNXBinaryBackend(VPNBackend):
         """
         args: list[str] = ["-s", profile.server]
 
+        login = (
+            f"{profile.domain}\\{profile.username}"
+            if profile.domain
+            else profile.username
+        )
+
+        # CCC-only auth: active_key written to ~/.snxrc by _run_ccc_only_auth().
+        # Do NOT use -r here.  The SNX binary reads ~/.snxrc at startup and
+        # embeds auth_id in its own authentication request even without -r.
+        # The server uses the CCC active_key to skip the OTP challenge (OTP was
+        # already consumed during CCC auth).  Using -r would invoke /SNX/ReLogin
+        # which requires the session to originate from the SNX binary itself —
+        # our externally-obtained CCC active_key is rejected by /SNX/ReLogin.
+        if profile.ccc_only_auth and self._ccc_only_auth_ok:
+            logger.info(
+                "_build_args: CCC-only auth succeeded → SNX -u %s (no -r; "
+                "~/.snxrc cleared, SNX performs its own full PTY auth).",
+                login,
+            )
+            return args + ["-u", login]
+
         # Portal reconnect mode — only when CCC auth produced a valid active_key:
-        # ``write_snxrc`` stores the CCC active_key as ``auth_id`` in ``~/.snxrc``.
+        # ``_write_snxrc_active_key`` stores the CCC active_key as ``auth_id`` in ``~/.snxrc``.
         # We pass ``-u user -r`` so SNX reads that file and validates via /SNX/ReLogin.
         #
         # When CCC auth failed (_ccc_auth_ok=False), -r is NOT safe to use because
@@ -1271,11 +1586,6 @@ class SNXBinaryBackend(VPNBackend):
         # In that case we fall through to regular PTY auth (snx -u user, no -r)
         # so SNX can authenticate itself — it will prompt for OTP in the PTY.
         if profile.portal_auth and self._portal_auth_ok and self._ccc_auth_ok:
-            login = (
-                f"{profile.domain}\\{profile.username}"
-                if profile.domain
-                else profile.username
-            )
             logger.info(
                 "_build_args: CCC auth succeeded → using SNX -u %s -r (reconnect).",
                 login,
@@ -1284,11 +1594,6 @@ class SNXBinaryBackend(VPNBackend):
         if profile.portal_auth and self._portal_auth_ok and not self._ccc_auth_ok:
             # CCC auth failed — fall through to regular PTY auth below.
             # SNX will handle full authentication including OTP interactively.
-            login = (
-                f"{profile.domain}\\{profile.username}"
-                if profile.domain
-                else profile.username
-            )
             logger.info(
                 "_build_args: CCC auth failed → SNX -u %s without -r "
                 "(full PTY auth, server will request fresh OTP).",
@@ -1305,7 +1610,6 @@ class SNXBinaryBackend(VPNBackend):
             if profile.ca_list:
                 args += ["-l", profile.ca_list]
         else:
-            login = f"{profile.domain}\\{profile.username}" if profile.domain else profile.username
             args += ["-u", login]
         if profile.ssl_port != 443:
             args += ["-p", str(profile.ssl_port)]

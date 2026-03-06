@@ -21,6 +21,7 @@ command; the password is never passed as a CLI argument.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import logging
 import os
 import re
@@ -199,6 +200,31 @@ class SNXRsBackend(VPNBackend):
                 "snxctl not found in PATH. "
                 "Install snx-rs: https://github.com/ancwrd1/snx-rs"
             )
+
+        # 1b. Auto-discover login_type if not set in profile.
+        # discover_login_options() sends a CCC ClientHello to the server and
+        # parses the login_options_list from the ServerHello response.
+        if not profile.login_type:
+            from .ccc_auth import discover_login_options
+            options = discover_login_options(
+                profile.server,
+                verify_ssl=not profile.ignore_server_cert,
+            )
+            if options:
+                discovered = options[0][0]
+                logger.info(
+                    "Auto-discovered login_type=%r "
+                    "(available: %s)",
+                    discovered,
+                    ", ".join(f"{id_!r}" for id_, _ in options),
+                )
+                profile = dataclasses.replace(profile, login_type=discovered)
+            else:
+                logger.warning(
+                    "Could not auto-discover login_type for %s — "
+                    "proceeding without it (connection may fail).",
+                    profile.server,
+                )
 
         # 2. Ensure snx-rs daemon is running.
         if not self._ensure_daemon():

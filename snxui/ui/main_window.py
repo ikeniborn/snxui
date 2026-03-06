@@ -192,7 +192,10 @@ class MainWindow:
     def _connect_tray(self) -> None:
         """Wire tray callbacks to window actions."""
         self._tray_manager.on_show_window(self.present)
-        self._tray_manager.on_connect_clicked(self._home_page.do_connect)
+        # Show window before connecting so password/OTP dialogs have a visible parent.
+        self._tray_manager.on_connect_clicked(
+            lambda: (self.present(), self._home_page.do_connect())
+        )
         self._tray_manager.on_disconnect_clicked(self._home_page.do_disconnect)
         self._tray_manager.on_quit(self._app.quit)
         self._tray_manager.on_context_menu(self._show_tray_context_menu)
@@ -201,7 +204,10 @@ class MainWindow:
     def _register_tray_actions(self) -> None:
         """Register GAction instances used by the tray context menu."""
         self._tray_connect_action = Gio.SimpleAction.new("tray-connect", None)
-        self._tray_connect_action.connect("activate", lambda *_: self._home_page.do_connect())
+        self._tray_connect_action.connect(
+            "activate",
+            lambda *_: (self.present(), self._home_page.do_connect()),
+        )
         self._app.add_action(self._tray_connect_action)
 
         self._tray_disconnect_action = Gio.SimpleAction.new("tray-disconnect", None)
@@ -220,11 +226,16 @@ class MainWindow:
         self._app.add_action(profiles_action)
 
     def _show_tray_context_menu(self) -> None:
-        """Show a popup context menu anchored to the main window (GTK4 approach).
+        """Show a GTK popup context menu anchored to the main window.
 
-        Called on both left-click (Activate) and right-click (ContextMenu) because
-        GNOME AppIndicator implementations may not dispatch ContextMenu reliably.
+        Only shown when the window is already visible — if hidden to tray,
+        the dbusmenu (D-Bus) handles the context menu natively without needing
+        a visible window.  Calling present() here when the window is hidden
+        defeats the purpose of minimising to tray.
         """
+        if not self._win.get_visible():
+            return
+
         from snxui.core.types import ConnectionState
 
         # Dismiss any previously created popover that may still be open.
@@ -259,7 +270,6 @@ class MainWindow:
         self._tray_popover = Gtk.PopoverMenu.new_from_model(menu)
         self._tray_popover.set_parent(self._win)
         self._tray_popover.set_has_arrow(False)
-        self._win.present()
         from gi.repository import GLib
         GLib.idle_add(self._tray_popover.popup)
 

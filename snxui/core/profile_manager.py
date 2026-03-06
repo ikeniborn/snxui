@@ -30,7 +30,7 @@ from .types import Profile, TunnelType, TwoFactorMethod
 logger = logging.getLogger(__name__)
 
 # Bump this constant whenever the JSON schema changes.
-_FILE_FORMAT_VERSION = 7
+_FILE_FORMAT_VERSION = 9
 
 
 def _xdg_config_home() -> Path:
@@ -68,6 +68,7 @@ def _profile_to_dict(profile: Profile) -> dict:
         "save_totp_secret": profile.save_totp_secret,
         "combined_auth": profile.combined_auth,
         "portal_auth": profile.portal_auth,
+        "ccc_only_auth": profile.ccc_only_auth,
         "tunnel_type": profile.tunnel_type.value,
         "esp_settings": profile.esp_settings,
         "ike_settings": profile.ike_settings,
@@ -133,6 +134,7 @@ def _profile_from_dict(data: dict) -> Profile:
         save_totp_secret=bool(data.get("save_totp_secret", False)),
         combined_auth=bool(data.get("combined_auth", False)),
         portal_auth=bool(data.get("portal_auth", False)),
+        ccc_only_auth=bool(data.get("ccc_only_auth", False)),
         tunnel_type=tunnel_type,
         esp_settings=data.get("esp_settings") or None,
         ike_settings=data.get("ike_settings") or None,
@@ -272,6 +274,19 @@ class ProfileManager:
                 profile_data.setdefault("transport_type", "auto")
                 profile_data.setdefault("ignore_server_cert", False)
             data["version"] = 7
+        if version < 8:
+            for profile_data in (data.get("profiles") or {}).values():
+                profile_data.setdefault("ccc_only_auth", False)
+            data["version"] = 8
+        if version < 9:
+            for profile_data in (data.get("profiles") or {}).values():
+                # All profiles migrate to python_ssl — the only supported backend.
+                profile_data["backend"] = "python_ssl"
+                profile_data["transport_type"] = "auto"
+                profile_data["ccc_only_auth"] = False
+                profile_data["combined_auth"] = False
+                profile_data["portal_auth"] = False
+            data["version"] = 9
         return data
 
     def _with_file_lock(self, fn: Callable[[], Any]) -> Any:

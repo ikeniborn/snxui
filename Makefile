@@ -1,4 +1,4 @@
-.PHONY: all test clean deb appimage install install-deps install-policy install-snx-rs
+.PHONY: all test clean deb appimage install install-deps install-policy install-helper install-snx-rs install-cap install-alt
 
 VENV        := .venv
 PYTHON      := $(VENV)/bin/python
@@ -15,20 +15,42 @@ $(VENV):
 	python3 -m venv --system-site-packages $(VENV)
 
 # Install application: system packages, Python package, binary and desktop integration
-install: $(VENV) install-snx-rs
+install: $(VENV) install-helper install-policy
 	find $(VENV)/lib -maxdepth 4 -name '~nxui*' -type d -exec rm -rf {} + 2>/dev/null || true
 	sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
 	    python3-dbus python3-keyring python3-secretstorage python3-pexpect \
-	    python3-filelock
+	    python3-filelock policykit-1
 	$(VENV)/bin/pip install -e .
 	sudo install -Dm755 $(VENV)/bin/snxui /usr/local/bin/snxui
-	sudo install -Dm644 snxui/data/com.snxui.policy \
-	    /usr/share/polkit-1/actions/com.snxui.policy
 	sudo install -Dm644 snxui/data/snxui.desktop \
 	    /usr/share/applications/snxui.desktop
 	sudo install -Dm644 snxui/data/icons/snxui.svg \
 	    /usr/share/icons/hicolor/scalable/apps/snxui.svg
 	sudo gtk-update-icon-cache /usr/share/icons/hicolor/ -t
+
+# Install the privileged net-helper script (used by pkexec for TUN setup).
+install-helper:
+	sudo install -Dm0755 snxui/helpers/snxui-net-helper \
+	    /usr/lib/snxui/snxui-net-helper
+
+# Install polkit policy for TUN interface management.
+install-policy:
+	sudo install -Dm644 snxui/data/com.snxui.policy \
+	    /usr/share/polkit-1/actions/com.snxui.policy
+
+# Install on ALT Linux p10 (uses apt-rpm package names).
+install-alt: $(VENV) install-helper install-policy
+	sudo apt-get install -y python3-module-gi typelib-1_0-Gtk-4_0 \
+	    typelib-1_0-Adw-1 typelib-1_0-AyatanaAppIndicator3-0_1 \
+	    python3-module-dbus python3-module-keyring \
+	    python3-module-secretstorage python3-module-pexpect \
+	    python3-module-filelock polkit
+	$(VENV)/bin/pip install -e .
+	sudo install -Dm755 $(VENV)/bin/snxui /usr/local/bin/snxui
+	sudo install -Dm644 snxui/data/snxui.desktop \
+	    /usr/share/applications/snxui.desktop
+	sudo install -Dm644 snxui/data/icons/snxui.svg \
+	    /usr/share/icons/hicolor/scalable/apps/snxui.svg
 
 # Install dev/build dependencies on top of base install
 install-deps: install
@@ -61,13 +83,19 @@ uninstall:
 	sudo rm -f /usr/share/polkit-1/actions/com.snxui.policy
 	sudo rm -f /usr/share/applications/snxui.desktop
 	sudo rm -f /usr/share/icons/hicolor/scalable/apps/snxui.svg
+	sudo rm -rf /usr/lib/snxui
 
-install-policy:
-	sudo install -Dm644 snxui/data/com.snxui.policy \
-	    /usr/share/polkit-1/actions/com.snxui.policy
+# DEPRECATED: setcap on python3 is no longer used.
+# The python_ssl backend now uses pkexec + snxui-net-helper for TUN setup.
+# Use 'make install-helper' instead.
+install-cap:
+	@echo "WARNING: install-cap is deprecated. The python_ssl backend now uses"
+	@echo "  pkexec + snxui-net-helper — no setcap required."
+	@echo "  Run 'make install-helper' to install the net-helper script."
 
 # Install snx-rs if missing or outdated.
-# Skips download when the installed version already matches SNX_RS_VER.
+# NOTE: snx-rs is no longer the default backend. install-snx-rs is kept for
+# manual use when the snx-rs backend is explicitly required.
 install-snx-rs:
 	@INSTALLED=$$(snxctl --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo ""); \
 	if [ "$$INSTALLED" = "$(SNX_RS_VER)" ]; then \

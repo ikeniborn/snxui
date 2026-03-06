@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import uuid
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -34,11 +35,12 @@ try:
 
     gi.require_version("Adw", "1")
     gi.require_version("Gtk", "4.0")
-    from gi.repository import Adw, Gtk
+    from gi.repository import Adw, GLib, Gtk
 
     _GTK_AVAILABLE = True
 except (ImportError, ValueError):
     Adw = None  # type: ignore[assignment]
+    GLib = None  # type: ignore[assignment]
     Gtk = None  # type: ignore[assignment]
     _GTK_AVAILABLE = False
     logger.warning("GTK4/Libadwaita not available — dialogs will not function.")
@@ -327,6 +329,9 @@ class ProfileDialog:
         dialog.set_default_size(480, 580)
         if parent is not None:
             dialog.set_transient_for(parent)
+        # Store window reference so sub-dialogs (e.g. Discover picker) can
+        # use it as parent for transient positioning.
+        self._dialog_window: object = dialog
 
         scroll, rows = self._build_form_rows()
         action_area = self._build_action_area(dialog, is_new, rows)
@@ -431,16 +436,11 @@ class ProfileDialog:
         cur_method_idx = 0
         if p and p.two_factor_method.value in _2FA_METHOD_VALUES:
             cur_method_idx = _2FA_METHOD_VALUES.index(p.two_factor_method.value)
-        method_row, totp_row, save_totp_row, combined_auth_row, portal_auth_row = (
+        method_row, totp_row, save_totp_row = (
             self._build_2fa_group(prefs_page, cur_method_idx)
         )
 
-        (
-            backend_row, login_type_row, transport_row, ignore_cert_row,
-        ) = self._build_backend_group(
-            prefs_page,
-            combined_auth_row, portal_auth_row,
-        )
+        ignore_cert_row = self._build_backend_group(prefs_page)
 
         rows = {
             "name": name_row, "server": server_row, "auth_mode": auth_mode_row,
@@ -449,11 +449,6 @@ class ProfileDialog:
             "save_pwd": save_pwd_row,
             "tunnel": tunnel_row, "esp": esp_row, "ike": ike_row,
             "2fa_method": method_row, "totp_secret": totp_row, "save_totp": save_totp_row,
-            "combined_auth": combined_auth_row,
-            "portal_auth": portal_auth_row,
-            "backend": backend_row,
-            "login_type": login_type_row,
-            "transport_type": transport_row,
             "ignore_server_cert": ignore_cert_row,
         }
         return scroll, rows
@@ -475,13 +470,18 @@ class ProfileDialog:
 
         tunnel_model = Gtk.StringList()
         tunnel_model.append("SSL (default)")
-        tunnel_model.append("IPSec / ESP")
-        tunnel_row = Adw.ComboRow(title="Tunnel Type", model=tunnel_model)
-        _ipsec_initially = bool(p and p.tunnel_type == TunnelType.IPSEC)
-        tunnel_row.set_selected(1 if _ipsec_initially else 0)
+        tunnel_model.append("IPSec / ESP (not yet supported)")
+        tunnel_row = Adw.ComboRow(
+            title="Tunnel Type",
+            subtitle="IPSec is not yet implemented in the Python SSL backend",
+            model=tunnel_model,
+        )
+        # Always force SSL — IPSec not implemented; lock to index 0.
+        tunnel_row.set_selected(0)
+        tunnel_row.set_sensitive(False)
         tunnel_group.add(tunnel_row)
 
-        # IPSec-specific parameters group (hidden in SSL mode)
+        # IPSec-specific parameters — hidden until IPSec is implemented.
         ipsec_group = Adw.PreferencesGroup()
         prefs_page.add(ipsec_group)
 
@@ -534,100 +534,40 @@ class ProfileDialog:
         save_totp_row.set_visible(cur_method_idx in (1, 2))
         tfa_group.add(save_totp_row)
 
-        combined_auth_row = Adw.SwitchRow(
-            title="Combined Authentication",
-            subtitle="Append OTP to password (for servers without interactive OTP prompt)",
-        )
-        combined_auth_row.set_active(p.combined_auth if p else False)
-        tfa_group.add(combined_auth_row)
-
-        portal_auth_row = Adw.SwitchRow(
-            title="Portal Authentication",
-            subtitle="Authenticate via HTTPS portal before SNX (for servers requiring browser/CShell flow)",
-        )
-        portal_auth_row.set_active(p.portal_auth if p else False)
-        tfa_group.add(portal_auth_row)
-
         def _on_method_changed(row: object, _param: object) -> None:
             is_totp = method_row.get_selected() in (1, 2)
             totp_row.set_visible(is_totp)
             save_totp_row.set_visible(is_totp)
         method_row.connect("notify::selected", _on_method_changed)
 
-        return method_row, totp_row, save_totp_row, combined_auth_row, portal_auth_row
+        return method_row, totp_row, save_totp_row
 
-    def _build_backend_group(
-        self,
-        prefs_page: object,
-        combined_auth_row: object,
-        portal_auth_row: object,
-    ) -> "tuple[object, object, object, object]":
-        """Build the Backend group and add it to *prefs_page*.
+    def _build_backend_group(self, prefs_page: object) -> object:
+        """Build the Connection Options group and add it to *prefs_page*.
 
-        Controls backend selection (auto / snx-rs / snx binary) and related
-        snx-rs–specific settings (login type, transport, cert verification).
-        The snx-binary-specific rows (combined_auth, portal_auth) are hidden
-        when snx-rs is explicitly selected.
+        The python_ssl backend is the only supported backend, so backend and
+        transport selection are no longer shown.  Only the certificate
+        verification toggle remains.
 
         Args:
-            prefs_page: The Adw.PreferencesPage to add the groups to.
-            combined_auth_row: The combined_auth SwitchRow from 2FA group.
-            portal_auth_row:   The portal_auth SwitchRow from 2FA group.
+            prefs_page: The Adw.PreferencesPage to add the group to.
 
         Returns:
-            Tuple of (backend_row, login_type_row, transport_row, ignore_cert_row).
+            The ``ignore_cert_row`` SwitchRow.
         """
         p = self._profile
 
-        backend_group = Adw.PreferencesGroup(title="VPN Backend")
-        prefs_page.add(backend_group)
-
-        backend_model = Gtk.StringList()
-        backend_model.append("Auto-detect")
-        backend_model.append("snx-rs (snxd / snxctl)")
-        backend_model.append("SNX binary (/usr/bin/snx)")
-        backend_row = Adw.ComboRow(title="Backend", model=backend_model)
-        _backend_values = ["auto", "snx_rs", "snx"]
-        cur_backend = (p.backend if p else "auto") or "auto"
-        cur_backend_idx = _backend_values.index(cur_backend) if cur_backend in _backend_values else 0
-        backend_row.set_selected(cur_backend_idx)
-        backend_group.add(backend_row)
-
-        login_type_row = Adw.EntryRow(title="Login Type (snx-rs, e.g. vpn_ssl_vpn)")
-        login_type_row.set_text(p.login_type if p else "")
-        backend_group.add(login_type_row)
-
-        transport_model = Gtk.StringList()
-        transport_model.append("Auto")
-        transport_model.append("SSL / TCPT")
-        transport_model.append("IPSec / UDP")
-        transport_row = Adw.ComboRow(title="Transport (snx-rs)", model=transport_model)
-        _transport_values = ["auto", "ssl", "udp"]
-        cur_transport = (p.transport_type if p else "auto") or "auto"
-        cur_transport_idx = (
-            _transport_values.index(cur_transport)
-            if cur_transport in _transport_values else 0
-        )
-        transport_row.set_selected(cur_transport_idx)
-        backend_group.add(transport_row)
+        options_group = Adw.PreferencesGroup(title="Connection Options")
+        prefs_page.add(options_group)
 
         ignore_cert_row = Adw.SwitchRow(
             title="Ignore Server Certificate",
-            subtitle="snx-rs only — skip TLS certificate verification",
+            subtitle="Skip TLS certificate verification (use only for testing)",
         )
         ignore_cert_row.set_active(bool(p.ignore_server_cert) if p else False)
-        backend_group.add(ignore_cert_row)
+        options_group.add(ignore_cert_row)
 
-        def _on_backend_changed(combo: object, _param: object) -> None:
-            is_snx_rs = combo.get_selected() == 1  # type: ignore[union-attr]
-            # snx-rs doesn't use portal_auth / combined_auth
-            combined_auth_row.set_visible(not is_snx_rs)  # type: ignore[union-attr]
-            portal_auth_row.set_visible(not is_snx_rs)    # type: ignore[union-attr]
-
-        backend_row.connect("notify::selected", _on_backend_changed)
-        _on_backend_changed(backend_row, None)  # apply initial state
-
-        return backend_row, login_type_row, transport_row, ignore_cert_row
+        return ignore_cert_row
 
     def _build_action_area(
         self, dialog: object, is_new: bool, rows: "dict[str, object]"
@@ -741,17 +681,6 @@ class ProfileDialog:
         ipsec_mode = rows["tunnel"].get_selected() == 1
         tunnel_type = TunnelType.IPSEC if ipsec_mode else TunnelType.SSL
 
-        _backend_values = ["auto", "snx_rs", "snx"]
-        backend_idx = rows["backend"].get_selected()
-        backend = _backend_values[backend_idx] if backend_idx < len(_backend_values) else "auto"
-
-        _transport_values = ["auto", "ssl", "udp"]
-        transport_idx = rows["transport_type"].get_selected()
-        transport_type = (
-            _transport_values[transport_idx]
-            if transport_idx < len(_transport_values) else "auto"
-        )
-
         profile = Profile(
             id=self._profile.id if self._profile else str(uuid.uuid4()),
             name=rows["name"].get_text().strip(),
@@ -764,14 +693,15 @@ class ProfileDialog:
             save_password=False if cert_mode else rows["save_pwd"].get_active(),
             two_factor_method=two_factor_method,
             save_totp_secret=rows["save_totp"].get_active(),
-            combined_auth=rows["combined_auth"].get_active(),
-            portal_auth=rows["portal_auth"].get_active(),
+            combined_auth=False,
+            portal_auth=False,
+            ccc_only_auth=False,
             tunnel_type=tunnel_type,
             esp_settings=rows["esp"].get_text().strip() or None if ipsec_mode else None,
             ike_settings=rows["ike"].get_text().strip() or None if ipsec_mode else None,
-            backend=backend,
-            login_type=rows["login_type"].get_text().strip(),
-            transport_type=transport_type,
+            backend="python_ssl",
+            login_type=self._profile.login_type if self._profile else "",
+            transport_type="auto",
             ignore_server_cert=rows["ignore_server_cert"].get_active(),
         )
         return profile, totp_secret

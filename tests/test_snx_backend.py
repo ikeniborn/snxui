@@ -7,6 +7,7 @@ without an actual SNX installation or network access.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -24,6 +25,7 @@ from snxui.core.snx_backend import (
     _RE_2FA_ANY,
     _RE_GATEWAY_CONFIRM,
     _SNX_SEARCH_PATHS,
+    _write_snxrc_active_key,
 )
 from snxui.core.types import ConnectionState, Profile
 
@@ -1229,30 +1231,30 @@ class TestPortalAuthOtpCaching:
         # SNX received the password (Phase 1), but NOT the OTP (server uses session).
         child.sendline.assert_called_once_with("password")
 
-    def test_combined_auth_with_fresh_otp_in_portal_fallback_mode(
+    def test_combined_auth_disabled_in_portal_ccc_fail_fallback(
         self, backend: SNXBackend, profile: Profile
     ) -> None:
-        """portal_auth=True + combined_auth=True + CCC failed → fresh OTP via dialog.
+        """portal_auth=True + combined_auth=True + CCC failed → combined_auth is DISABLED.
 
-        When portal auth succeeds but CCC returns 502 (disabled for RADIUS realm),
-        SNX is launched without -r and ~/.snxrc is cleared so the stale portal
-        auth_id does not interfere.  combined_auth still fires but uses the ORIGINAL
-        two_factor_callback (not the stale cached portal OTP) so the user is prompted
-        for a fresh OTP via the 2FA dialog.
+        When portal auth succeeds but CCC fails (e.g. snx_relogin=0 RADIUS realm),
+        combined_auth is disabled for the SNX PTY fallback because:
+        1. Servers with snx_relogin=0 consistently reject combined creds.
+        2. The portal already consumed OTP1 (RADIUS OTPs are one-time-use).
+        SNX PTY sends the plain password; the server issues a fresh OTP challenge
+        if supported, otherwise the connection fails (indicating ccc_only_auth=True
+        should be used for this profile instead).
         """
         from snxui.core.portal_auth import PortalAuthResult
-        from snxui.core.snx_backend import _SNXRC_PATH
 
         profile.portal_auth = True
-        profile.combined_auth = True  # server requires combined auth
-        fresh_otp = "654321"
-        otp_dialog_cb = MagicMock(return_value=fresh_otp)
+        profile.combined_auth = True  # server requires combined auth, but disabled in fallback
+        otp_dialog_cb = MagicMock(return_value="654321")
 
         success_result = PortalAuthResult(
             success=True, session_id="SID", otp_used="111111"  # stale portal OTP
         )
 
-        # PTY flow: idx=0 = password prompt, idx=0 = connected (combined auth sends once)
+        # PTY flow: idx=0 = password prompt, idx=0 = connected (plain password sent)
         child = _make_child_mock([0, 0])
         child.before = "Office Mode IP      : 10.1.2.3\n"
         child.after = "SNX - Connected."
@@ -1279,13 +1281,16 @@ class TestPortalAuthOtpCaching:
         # ~/.snxrc must be cleared to prevent stale auth_id from interfering
         mock_clear_snxrc.assert_called_once()
 
-        # combined_auth must have requested a FRESH OTP via the dialog callback
-        # (NOT the stale portal OTP "111111")
-        otp_dialog_cb.assert_called_once()
+        # combined_auth is DISABLED in portal+CCC failure fallback:
+        # the OTP dialog callback must NOT have been called.
+        otp_dialog_cb.assert_not_called()
 
-        # SNX received "mypassword<fresh_otp>" (combined auth), not plain password
+        # SNX received the plain password only (no combined OTP appended)
         sendline_calls = [c.args[0] for c in child.sendline.call_args_list]
-        assert f"mypassword{fresh_otp}" in sendline_calls
+        assert "mypassword" in sendline_calls
+        assert not any("mypassword6" in s for s in sendline_calls), (
+            "combined_auth must be disabled — should not send password+OTP"
+        )
 
 
 class TestBuildArgsReconnectMode:
@@ -1447,3 +1452,461 @@ class TestReconnectSession:
         child.after = ""
         result = backend._run_reconnect_session(child, "testpass", profile, None)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# CCC-only auth mode
+# ---------------------------------------------------------------------------
+
+
+class TestWriteSnxrcActiveKey:
+    """Tests for the _write_snxrc_active_key() module-level helper."""
+
+    def test_writes_gateway_and_auth_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snxrc = Path(tmpdir) / ".snxrc"
+            with patch("snxui.core.snx_backend._SNXRC_PATH", snxrc):
+                result = _write_snxrc_active_key("vpn.example.com", "deadbeef1234")
+            assert result is True
+            content = snxrc.read_text()
+            assert 'gateway="vpn.example.com"' in content
+            assert 'auth_id="deadbeef1234"' in content
+
+    def test_file_mode_is_0o600(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snxrc = Path(tmpdir) / ".snxrc"
+            with patch("snxui.core.snx_backend._SNXRC_PATH", snxrc):
+                _write_snxrc_active_key("vpn.example.com", "key")
+            mode = snxrc.stat().st_mode & 0o777
+            assert mode == 0o600
+
+    def test_returns_false_on_oserror(self) -> None:
+        bad_path = Path("/nonexistent_dir/cannot_write/.snxrc")
+        with patch("snxui.core.snx_backend._SNXRC_PATH", bad_path):
+            result = _write_snxrc_active_key("server", "key")
+        assert result is False
+
+
+class TestBuildArgsCCCOnly:
+    """_build_args() for ccc_only_auth mode — no -r flag."""
+
+    def test_ccc_only_auth_ok_no_r_flag(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth=True + _ccc_only_auth_ok=True → -u user (no -r).
+
+        SNX binary reads auth_id from ~/.snxrc automatically at startup.
+        /SNX/ReLogin (-r mode) rejects externally-obtained CCC tokens.
+        """
+        profile.ccc_only_auth = True
+        backend._ccc_only_auth_ok = True
+        args = backend._build_args(profile)
+        assert "-r" not in args
+        assert "-u" in args
+        assert "bob" in args
+
+    def test_ccc_only_auth_not_ok_no_r_flag(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth=True but _ccc_only_auth_ok=False → no -r (CCC failed)."""
+        profile.ccc_only_auth = True
+        backend._ccc_only_auth_ok = False
+        args = backend._build_args(profile)
+        assert "-r" not in args
+
+    def test_ccc_only_auth_false_no_r_flag(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth=False → -r not added even if _ccc_only_auth_ok is set."""
+        profile.ccc_only_auth = False
+        backend._ccc_only_auth_ok = True
+        args = backend._build_args(profile)
+        assert "-r" not in args
+
+    def test_ccc_only_auth_with_domain(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth uses domain\\username format, still no -r."""
+        profile.ccc_only_auth = True
+        profile.domain = "CORP"
+        backend._ccc_only_auth_ok = True
+        args = backend._build_args(profile)
+        assert "CORP\\bob" in args
+        assert "-r" not in args
+
+
+class TestRunCCCOnlyAuth:
+    """Tests for SNXBinaryBackend._run_ccc_only_auth()."""
+
+    def test_success_sets_ccc_only_auth_ok_and_returns_none(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """Successful CCC → (None, otp_or_None), _ccc_only_auth_ok=True, ~/.snxrc cleared."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+        active_key = "cafebabe" * 8
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc") as mock_clear, \
+             patch("snxui.core.snx_backend._write_snxrc_active_key") as mock_write:
+            MockCCCAuth.return_value.authenticate.return_value = active_key
+            result, otp = backend._run_ccc_only_auth(profile, "password", None, None)
+
+        assert result is None, "None means proceed to SNX PTY"
+        assert otp is None, "no otp_callback passed → no OTP captured"
+        assert backend._ccc_only_auth_ok is True
+        mock_clear.assert_called_once()
+        mock_write.assert_not_called()  # auth_id is NOT written
+
+    def test_success_captures_otp_from_callback(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """OTP returned by callback is captured and returned as second element."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+        otp_cb = MagicMock(return_value="654321")
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"):
+            MockCCCAuth.return_value.authenticate.return_value = "active_key"
+            # Simulate CCCAuth calling otp_callback during authenticate()
+            def _simulate_auth(**kwargs):
+                cb = kwargs.get("otp_callback")
+                if cb:
+                    cb("Enter OTP:")  # triggers capture
+                return "active_key"
+            MockCCCAuth.return_value.authenticate.side_effect = _simulate_auth
+            result, otp = backend._run_ccc_only_auth(profile, "password", None, otp_cb)
+
+        assert result is None
+        assert otp == "654321", "captured OTP should be returned for SNX PTY reuse"
+
+    def test_ccc_failure_returns_false_and_sets_error_state(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC returns None (failed, OTP/config error) → error NOT triggering keyring deletion."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+        statuses = []
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
+            MockCCCAuth.return_value.authenticate.return_value = None
+            MockCCCAuth.return_value.credentials_rejected = False  # OTP error, not password
+            result, otp = backend._run_ccc_only_auth(
+                profile, "password", lambda s: statuses.append(s), None
+            )
+
+        assert result is False
+        assert otp is None
+        assert backend._ccc_only_auth_ok is False
+        assert statuses and statuses[-1].state == ConnectionState.ERROR
+        # OTP/config error must NOT contain "authentication failed" → no keyring deletion
+        assert "authentication failed" not in statuses[-1].error_message.lower()
+
+    def test_ccc_failure_wrong_password_triggers_auth_failed_message(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC returns None with credentials_rejected=True → 'authentication failed' message.
+
+        This triggers _is_auth_failure() in home_page so the UI shows the
+        password re-entry dialog and clears the stored (wrong) keyring password.
+        """
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+        statuses = []
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth:
+            MockCCCAuth.return_value.authenticate.return_value = None
+            MockCCCAuth.return_value.credentials_rejected = True  # rc=14 wrong password
+            result, otp = backend._run_ccc_only_auth(
+                profile, "wrongpassword", lambda s: statuses.append(s), None
+            )
+
+        assert result is False
+        assert statuses and statuses[-1].state == ConnectionState.ERROR
+        # Must contain "authentication failed" so _is_auth_failure() triggers keyring deletion
+        assert "authentication failed" in statuses[-1].error_message.lower()
+
+    def test_passes_otp_callback_wrapper_to_ccc(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """_run_ccc_only_auth passes a capturing wrapper (not the original) to CCCAuth."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+        otp_cb = MagicMock(return_value="123456")
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"):
+            MockCCCAuth.return_value.authenticate.return_value = "active_key"
+            backend._run_ccc_only_auth(profile, "password", None, otp_cb)
+
+        _, kwargs = MockCCCAuth.return_value.authenticate.call_args
+        # A wrapper is passed (not the original callback directly) — verify it's callable
+        wrapper_cb = kwargs.get("otp_callback")
+        assert callable(wrapper_cb)
+        # Calling the wrapper should invoke otp_cb
+        assert wrapper_cb("prompt") == "123456"
+        otp_cb.assert_called_once_with("prompt")
+
+    def test_uses_login_type_as_realm(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """login_type is forwarded as realm to CCCAuth.authenticate()."""
+        profile.ccc_only_auth = True
+        profile.login_type = "my_realm"
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"):
+            MockCCCAuth.return_value.authenticate.return_value = "active_key"
+            backend._run_ccc_only_auth(profile, "password", None, None)
+
+        _, kwargs = MockCCCAuth.return_value.authenticate.call_args
+        assert kwargs.get("realm") == "my_realm"
+
+    def test_domain_prefix_in_username(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """domain\\username is passed to CCCAuth when domain is set."""
+        profile.ccc_only_auth = True
+        profile.login_type = "realm"
+        profile.domain = "CORP"
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"):
+            MockCCCAuth.return_value.authenticate.return_value = "active_key"
+            backend._run_ccc_only_auth(profile, "password", None, None)
+
+        _, kwargs = MockCCCAuth.return_value.authenticate.call_args
+        assert kwargs.get("username") == "CORP\\bob"
+
+
+class TestConnectCCCOnly:
+    """Integration: connect() with ccc_only_auth=True goes through CCC → SNX PTY."""
+
+    def _patch_pexpect(self, child_mock):
+        return patch("snxui.core.snx_backend.pexpect.spawn", return_value=child_mock)
+
+    def _patch_monitor(self):
+        return patch.object(SNXBackend, "_start_monitor")
+
+    def _patch_tunsnx(self, exists: bool = False):
+        return patch.object(SNXBackend, "_tunsnx_exists", return_value=exists)
+
+    def test_connect_ccc_only_success_normal_pty_session(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth=True + CCC ok → SNX launched without -r, normal PTY session.
+
+        auth_id embedded in ~/.snxrc; server uses it to skip OTP.
+        SNX prompts for password → we send it → connected.
+        """
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+
+        # await_password idx=0 (password prompt), post_password idx=0 (connected)
+        child = _make_child_mock([0, 0])
+        child.before = "Session parameters:\n  Office Mode IP: 10.0.0.1\n"
+        child.after = "SNX - Connected.\n"
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc") as mock_clear, \
+             patch("snxui.core.snx_backend._write_snxrc_active_key") as mock_write, \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.return_value = "active_key_hex"
+            result = backend.connect(profile, "password")
+
+        assert result is True
+        assert backend._ccc_only_auth_ok is True
+        assert backend._status.state == ConnectionState.CONNECTED
+        mock_clear.assert_called_once()   # ~/.snxrc cleared, not written
+        mock_write.assert_not_called()
+
+    def test_connect_ccc_only_with_otp_injects_cached_otp_into_pty(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC OTP is cached and fed to the SNX PTY 2FA prompt automatically.
+
+        Sequence: password prompt → connected without OTP prompt (TOTP reuse).
+        The cached OTP is tried first; if SNX doesn't ask for 2FA, it's never used.
+        """
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+
+        # Simulate CCC asking for OTP → callback returns "112233"
+        otp_cb = MagicMock(return_value="112233")
+
+        # SNX PTY: password prompt (0) → connected (0) — no 2FA prompt (TOTP reused)
+        child = _make_child_mock([0, 0])
+        child.before = "Session parameters:\n"
+        child.after = "SNX - Connected.\n"
+
+        def _auth_with_otp(**kwargs):
+            cb = kwargs.get("otp_callback")
+            if cb:
+                cb("Enter OTP:")  # CCC asks for OTP, callback captures it
+            return "active_key"
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"), \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.side_effect = _auth_with_otp
+            result = backend.connect(profile, "password", two_factor_callback=otp_cb)
+
+        assert result is True
+        assert backend._ccc_only_auth_ok is True
+
+    def test_connect_ccc_only_ccc_failure_returns_false(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """ccc_only_auth=True + CCC fails → connect() returns False, no SNX spawned."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+
+        child = _make_child_mock([])
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.return_value = None
+            result = backend.connect(profile, "password")
+
+        assert result is False
+        assert backend._ccc_only_auth_ok is False
+        assert backend._status.state == ConnectionState.ERROR
+        child.sendline.assert_not_called()
+
+    def test_ccc_only_and_portal_auth_are_mutually_exclusive(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """When ccc_only_auth=True, portal_auth branch is NOT entered."""
+        profile.ccc_only_auth = True
+        profile.portal_auth = True  # set both — ccc_only_auth takes priority
+        profile.login_type = "vpn_ssl_vpn"
+
+        child = _make_child_mock([0, 0])
+        child.before = ""
+        child.after = "SNX - Connected.\n"
+
+        portal_called = []
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"), \
+             patch("snxui.core.portal_auth.PortalAuth") as MockPortal, \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.return_value = "active_key"
+            MockPortal.return_value.authenticate.side_effect = lambda *a, **kw: portal_called.append(1)
+            backend.connect(profile, "password")
+
+        assert not portal_called, "PortalAuth.authenticate must NOT be called when ccc_only_auth=True"
+
+    def test_connect_ccc_only_snx_auth_failed_gives_actionable_error(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC success + SNX binary auth-failed → actionable error message, not generic auth error.
+
+        Sequence: CCC ok → SNX launched → password prompt (idx=0) → auth-failed (idx=3).
+        Expected: _handle_ccc_only_snx_auth_failed is called; error message mentions
+        snx-rs and combined auth, not generic "check username and password".
+        """
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+
+        # Simulate CCC asking for OTP (RADIUS) — OTP captured, sets _ccc_only_otp_used
+        otp_cb = MagicMock(return_value="123456")
+
+        def _auth_with_otp(**kwargs):
+            cb = kwargs.get("otp_callback")
+            if cb:
+                cb("Enter OTP:")
+            return "active_key"
+
+        # PTY: password prompt (idx=0), then auth-failed (idx=3 in _handle_post_password)
+        child = _make_child_mock([0, 3])
+        child.before = "SNX: Connection aborted."
+        child.after = ""
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"), \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.side_effect = _auth_with_otp
+            result = backend.connect(profile, "password", two_factor_callback=otp_cb)
+
+        assert result is False
+        assert backend._ccc_only_auth_ok is True
+        assert backend._ccc_only_otp_used is True
+        assert backend._status.state == ConnectionState.ERROR
+        # Error message must NOT say "check username and password"
+        assert "check username and password" not in backend._status.error_message
+        # Must mention actionable fixes
+        assert "snx-rs" in backend._status.error_message
+        assert "Combined auth" in backend._status.error_message or "combined" in backend._status.error_message.lower()
+
+    def test_connect_ccc_only_snx_auth_failed_no_otp_simpler_message(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC success (no OTP) + SNX binary auth-failed → shorter actionable error."""
+        profile.ccc_only_auth = True
+        profile.login_type = "vpn_ssl_vpn"
+
+        # PTY: password prompt (idx=0), then auth-failed (idx=3)
+        child = _make_child_mock([0, 3])
+        child.before = ""
+        child.after = ""
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"), \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            # CCC succeeds without OTP
+            MockCCCAuth.return_value.authenticate.return_value = "active_key_no_otp"
+            result = backend.connect(profile, "password")
+
+        assert result is False
+        assert backend._ccc_only_auth_ok is True
+        assert backend._ccc_only_otp_used is False
+        assert backend._status.state == ConnectionState.ERROR
+        assert "check username and password" not in backend._status.error_message
+        assert "snx-rs" in backend._status.error_message
+
+    def test_connect_ccc_only_combined_auth_also_fails_snxrs_only_message(
+        self, backend: SNXBackend, profile: Profile
+    ) -> None:
+        """CCC ok + combined_auth=True + SNX binary auth-failed → 'snx-rs only' message.
+
+        This is the real-world RADIUS scenario: even combined auth (password+OTP)
+        is rejected by the server after successful CCC.  The error message must
+        NOT suggest 'enable Combined auth' (already enabled) and must tell the
+        user the server only works with snx-rs.
+        """
+        profile.ccc_only_auth = True
+        profile.combined_auth = True   # already enabled — and still fails
+        profile.login_type = "vpn_UF-Username_RADIUS"
+
+        otp_cb = MagicMock(return_value="654321")
+
+        def _auth_with_otp(**kwargs):
+            cb = kwargs.get("otp_callback")
+            if cb:
+                cb("Enter OTP:")
+            return "active_key"
+
+        # PTY: password prompt (idx=0), auth-failed (idx=3 → _handle_ccc_only_snx_auth_failed)
+        child = _make_child_mock([0, 3])
+        child.before = "SNX: Connection aborted."
+        child.after = ""
+
+        with patch("snxui.core.ccc_auth.CCCAuth") as MockCCCAuth, \
+             patch("snxui.core.snx_backend._clear_snxrc"), \
+             self._patch_pexpect(child), self._patch_tunsnx(False), self._patch_monitor():
+            MockCCCAuth.return_value.authenticate.side_effect = _auth_with_otp
+            result = backend.connect(profile, "password", two_factor_callback=otp_cb)
+
+        assert result is False
+        assert backend._ccc_only_auth_ok is True
+        assert backend._ccc_only_otp_used is True
+        assert backend._status.state == ConnectionState.ERROR
+        msg = backend._status.error_message
+        # Must NOT suggest "enable Combined auth" (it's already on)
+        assert "enable" not in msg.lower() or "Combined auth" not in msg
+        # Must clearly say snx-rs is the solution
+        assert "snx-rs" in msg
+        # Must say "does not support SNX binary" or similar
+        assert "does not support" in msg or "cannot" in msg.lower()

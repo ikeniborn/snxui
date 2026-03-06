@@ -1,0 +1,1232 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html">
+
+    <!-- Generated with Sphinx 9.1.0 and Furo 2025.12.19 -->
+        <title>Консистентность snxui python_ssl и snx-rs - snxui Documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="sphinx/index.html"><div class="brand">snxui Documentation</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="sphinx/index.html">
+  
+  <span class="sidebar-brand-text">snxui Documentation</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="_sources/snxui-vs-snxrs-consistency.md.txt" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div>
+<div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="snxui-python-ssl-snx-rs">
+<h1>Консистентность snxui python_ssl и snx-rs<a class="headerlink" href="#snxui-python-ssl-snx-rs" title="Link to this heading">¶</a></h1>
+<p><strong>Дата:</strong> 2026-03-05 (обновлено)
+<strong>Статус:</strong> Финальный — по результатам отладки, анализа исходного кода snx-rs и архитектурного рефакторинга</p>
+<hr class="docutils" />
+<section id="id1">
+<h2>1. Краткий вывод<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">snxui</span> <span class="pre">python_ssl</span></code> (бэкенд <code class="docutils literal notranslate"><span class="pre">PythonSSLBackend</span> <span class="pre">+</span> <span class="pre">SSLTunnel</span></code>) реализует тот же протокол,
+что и <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code>, на уровне TLS/SLIM/CCC.
+<strong>Протокольная консистентность: полная</strong> (с учётом исправлений, сделанных в сессиях 2026-03-05).</p>
+<p><code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> является <strong>единственным поддерживаемым бэкендом</strong> для новых установок.
+Режим <code class="docutils literal notranslate"><span class="pre">&quot;auto&quot;</span></code> в <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code> теперь всегда возвращает <code class="docutils literal notranslate"><span class="pre">PythonSSLBackend</span></code>.
+Все существующие профили мигрируют на <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> при загрузке (формат v9).</p>
+<p>TUN-устройство создаётся через привилегированный хелпер <code class="docutils literal notranslate"><span class="pre">snxui-net-helper</span></code> (pkexec),
+что полностью устраняет необходимость в <code class="docutils literal notranslate"><span class="pre">setcap</span> <span class="pre">cap_net_admin</span></code> на интерпретаторе Python.</p>
+</section>
+<hr class="docutils" />
+<section id="id2">
+<h2>2. Кросс-таблица: равенство и различия<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h2>
+<section id="ccc">
+<h3>2.1 CCC-аутентификация<a class="headerlink" href="#ccc" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Аспект</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Эндпоинт</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/clients/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/clients/</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>User-Agent</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SNXClient</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SNXClient</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Content-Type</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">application/x-snx-request</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">application/x-snx-request</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Тип запроса ClientHello</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(client_hello</span> <span class="pre">...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(client_hello</span> <span class="pre">...)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Поле <code class="docutils literal notranslate"><span class="pre">:OM</span></code> в client_hello</p></td>
+<td><p>✓ (serde rename из <code class="docutils literal notranslate"><span class="pre">office_mode</span></code>)</p></td>
+<td><p>✓</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">protocol_version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">protocol_minor_version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">client_type</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;4&quot;)</span></code> строка в кавычках</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;4&quot;)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cookie</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;&lt;active_key&gt;&quot;)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;&lt;active_key&gt;&quot;)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>XOR-обфускация пароля</p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">_snx_obfuscate()</span></code></p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">util.rs::obfuscate()</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>XOR-таблица (77 байт)</p></td>
+<td><p>Идентична snx-rs</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">util.rs::XOR_TABLE</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>MultiChallange (OTP)</p></td>
+<td><p>✓</p></td>
+<td><p>✓</p></td>
+</tr>
+<tr class="row-even"><td><p>Орфография “MultiChallange”</p></td>
+<td><p>✓ намеренная</p></td>
+<td><p>✓ намеренная</p></td>
+</tr>
+<tr class="row-odd"><td><p>Определение успеха</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rc=0</span></code> или <code class="docutils literal notranslate"><span class="pre">authn_status=done</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">credentials_rejected</span></code> flag</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rc=14</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-odd"><td><p>Auto-discover login_type</p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">discover_login_options()</span></code></p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">snx-rs</span> <span class="pre">-m</span> <span class="pre">info</span> <span class="pre">-s</span> <span class="pre">&lt;server&gt;</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Источник кода</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/ccc_auth.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/ccc.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">proto.rs</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Вывод:</strong> CCC-аутентификация реализована в <code class="docutils literal notranslate"><span class="pre">ccc_auth.py</span></code> и <strong>полностью разделяется</strong>
+всеми бэкендами snxui. snx-rs и snxui используют одинаковый протокол.</p>
+</section>
+<hr class="docutils" />
+<section id="slim-ssl">
+<h3>2.2 SLIM-фреймирование (SSL туннель)<a class="headerlink" href="#slim-ssl" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Аспект</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Формат фрейма</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[4B</span> <span class="pre">BE</span> <span class="pre">LENGTH][4B</span> <span class="pre">BE</span> <span class="pre">TYPE][payload]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[4B</span> <span class="pre">BE</span> <span class="pre">LENGTH][4B</span> <span class="pre">BE</span> <span class="pre">TYPE][payload]</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Control frame type</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Data frame type</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Null-терминатор в control</p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">payload</span> <span class="pre">+</span> <span class="pre">b&quot;\x00&quot;</span></code>, включён в LENGTH</p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">data.push(b'\0')</span></code> (<code class="docutils literal notranslate"><span class="pre">codec.rs</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>Удаление null при чтении</p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">removesuffix(b&quot;\x00&quot;)</span></code></p></td>
+<td><p>✓</p></td>
+</tr>
+<tr class="row-odd"><td><p>TLS drain до <code class="docutils literal notranslate"><span class="pre">select()</span></code></p></td>
+<td><p>✓ <code class="docutils literal notranslate"><span class="pre">ssl_sock.pending()</span></code> loop</p></td>
+<td><p>аналогично (Tokio async read)</p></td>
+</tr>
+<tr class="row-even"><td><p>Stop-сигнал</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">os.pipe()</span></code> + <code class="docutils literal notranslate"><span class="pre">select()</span></code></p></td>
+<td><p>Tokio CancellationToken</p></td>
+</tr>
+<tr class="row-odd"><td><p>Источник</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxui/core/ssl_tunnel.py</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/ssl.rs</span></code>, <code class="docutils literal notranslate"><span class="pre">codec.rs</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Вывод:</strong> Формат фреймов идентичен. Критическое исправление произошло в сессии 2026-03-05:
+изначально был ошибочный порядок <code class="docutils literal notranslate"><span class="pre">[TYPE][LENGTH]</span></code> — исправлен на <code class="docutils literal notranslate"><span class="pre">[LENGTH][TYPE]</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="client-hello-s-expression">
+<h3>2.3 Client_hello S-expression<a class="headerlink" href="#client-hello-s-expression" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Поле</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs <code class="docutils literal notranslate"><span class="pre">ssl.rs</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Корневой тег</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(client_hello</span> <span class="pre">...)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(client_hello</span> <span class="pre">...)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">:client_version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">:protocol_version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">:protocol_minor_version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">:OM</span> <span class="pre">:ipaddr</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;0.0.0.0&quot;)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;0.0.0.0&quot;)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">:OM</span> <span class="pre">:keep_address</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(false)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(false)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">:optional</span> <span class="pre">:client_type</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;4&quot;)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;4&quot;)</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">:cookie</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;&lt;active_key&gt;&quot;)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(&quot;&lt;active_key&gt;&quot;)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Формат отступов</p></td>
+<td><p>TAB (1 пробел?)</p></td>
+<td><p>TAB</p></td>
+</tr>
+<tr class="row-odd"><td><p>Экранирование cookie</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">\\</span></code>, <code class="docutils literal notranslate"><span class="pre">\&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">\n</span></code>, <code class="docutils literal notranslate"><span class="pre">\r</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-even"><td><p>session_id в header</p></td>
+<td><p>не отправляется</p></td>
+<td><p>не отправляется</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<hr class="docutils" />
+<section id="keepalive">
+<h3>2.4 Keepalive<a class="headerlink" href="#keepalive" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Аспект</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Тип keepalive</p></td>
+<td><p>Control frame, S-expression</p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-odd"><td><p>S-expression</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(keepalive\n</span> <span class="pre">:id</span> <span class="pre">(&quot;0&quot;)\n)\n</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(keepalive</span> <span class="pre">:id</span> <span class="pre">&quot;0&quot;)</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>ID поле</p></td>
+<td><p>Всегда <code class="docutils literal notranslate"><span class="pre">&quot;0&quot;</span></code> (константа)</p></td>
+<td><p>Всегда <code class="docutils literal notranslate"><span class="pre">&quot;0&quot;</span></code> (<code class="docutils literal notranslate"><span class="pre">keepalive.rs</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Интервал</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">keepalive_timeout</span> <span class="pre">//</span> <span class="pre">2</span></code> сек</p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-even"><td><p>Источник интервала</p></td>
+<td><p>hello_reply от сервера</p></td>
+<td><p>hello_reply от сервера</p></td>
+</tr>
+<tr class="row-odd"><td><p>Ограничение сверху</p></td>
+<td><p>300 сек (<code class="docutils literal notranslate"><span class="pre">_MAX_KEEPALIVE_SECS</span></code>)</p></td>
+<td><p>нет (Rust безопасен)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<hr class="docutils" />
+<section id="tun">
+<h3>2.5 TUN-устройство и сеть<a class="headerlink" href="#tun" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Аспект</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Устройство</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/dev/net/tun</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/dev/net/tun</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Флаги</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IFF_TUN</span> <span class="pre">|</span> <span class="pre">IFF_NO_PI</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-even"><td><p>Ioctl</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TUNSETIFF</span> <span class="pre">(0x400454CA)</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-odd"><td><p>Интерфейс</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tunsnx</span></code> (константа)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tunsnx</span></code> или настраивается</p></td>
+</tr>
+<tr class="row-even"><td><p>MTU</p></td>
+<td><p>1350</p></td>
+<td><p>1350 (default)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Назначение IP</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">tuntap</span> <span class="pre">add</span> <span class="pre">…</span> <span class="pre">user</span> <span class="pre">&lt;uid&gt;</span></code> + <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">addr</span> <span class="pre">add</span> <span class="pre">&lt;ip&gt;/32</span> <span class="pre">dev</span> <span class="pre">tunsnx</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">addr</span> <span class="pre">add</span></code> напрямую (root)</p></td>
+</tr>
+<tr class="row-even"><td><p>Маршруты</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">route</span> <span class="pre">add</span> <span class="pre">&lt;net&gt;/&lt;prefix&gt;</span> <span class="pre">dev</span> <span class="pre">tunsnx</span></code></p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-odd"><td><p>Привилегии</p></td>
+<td><p><strong>pkexec + snxui-net-helper</strong> (polkit <code class="docutils literal notranslate"><span class="pre">auth_self_keep</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code> на snx-rs binary</p></td>
+</tr>
+<tr class="row-even"><td><p>Деконфигурация</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pkexec</span> <span class="pre">snxui-net-helper</span> <span class="pre">destroy</span> <span class="pre">tunsnx</span></code> (<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">link</span> <span class="pre">delete</span></code>)</p></td>
+<td><p>аналогично</p></td>
+</tr>
+<tr class="row-odd"><td><p>setcap на интерпретаторе</p></td>
+<td><p>✗ <strong>не требуется</strong></p></td>
+<td><p>✗ (setcap на snx-rs binary)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Ключевое архитектурное решение (сессия 2026-03-05):</strong> TUN создаётся как
+<code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">tuntap</span> <span class="pre">add</span> <span class="pre">dev</span> <span class="pre">tunsnx</span> <span class="pre">mode</span> <span class="pre">tun</span> <span class="pre">user</span> <span class="pre">&lt;uid&gt;</span></code> — ядро Linux разрешает <code class="docutils literal notranslate"><span class="pre">TUNSETIFF</span></code>
+без <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code> процессу, чей UID совпадает с <code class="docutils literal notranslate"><span class="pre">tun-&gt;owner</span></code>. Это полностью
+устраняет <code class="docutils literal notranslate"><span class="pre">setcap</span> <span class="pre">cap_net_admin+ep</span> <span class="pre">/usr/bin/python3</span></code>.</p>
+</section>
+<hr class="docutils" />
+<section id="id3">
+<h3>2.6 Транспорт и архитектура<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Аспект</p></th>
+<th class="head"><p>snxui <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head"><p>snx-rs</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>SSL туннель</p></td>
+<td><p>✓</p></td>
+<td><p>✓</p></td>
+</tr>
+<tr class="row-odd"><td><p>IPSec (IKEv1/ESP)</p></td>
+<td><p>✗ не реализован</p></td>
+<td><p>✓</p></td>
+</tr>
+<tr class="row-even"><td><p>Язык</p></td>
+<td><p>Python 3.10+</p></td>
+<td><p>Rust</p></td>
+</tr>
+<tr class="row-odd"><td><p>Процесс</p></td>
+<td><p>In-process (daemon thread)</p></td>
+<td><p>Отдельный daemon (<code class="docutils literal notranslate"><span class="pre">snx-rs</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>Управление</p></td>
+<td><p>Прямой вызов Python API</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">connect/disconnect/status</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Конфиг-файл</p></td>
+<td><p>Нет (in-memory)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.config/snx-rs/snx-rs.conf</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Пароль в памяти</p></td>
+<td><p>Только во время connect()</p></td>
+<td><p>base64 в файле (chmod 0o600)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Polling статуса</p></td>
+<td><p>Нет (колбэк напрямую)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">status</span></code> каждые 2 сек</p></td>
+</tr>
+<tr class="row-even"><td><p>OTP-интерфейс</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TwoFactorCallback</span></code> (callable)</p></td>
+<td><p>PTY через pexpect + snxctl</p></td>
+</tr>
+<tr class="row-odd"><td><p>Зависимости OS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pkexec</span></code>, <code class="docutils literal notranslate"><span class="pre">ip</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>, <code class="docutils literal notranslate"><span class="pre">ip</span></code>, <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code>, <code class="docutils literal notranslate"><span class="pre">snxctl</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Бинарные зависимости</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxui-net-helper</span></code> (входит в пакет)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> + <code class="docutils literal notranslate"><span class="pre">snxctl</span></code> (~10 MB, внешние)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Версия протокола</p></td>
+<td><p>Та же (из анализа snx-rs)</p></td>
+<td><p>актуальная Rust-реализация</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="id4">
+<h2>3. Плюсы и минусы каждого решения<a class="headerlink" href="#id4" title="Link to this heading">¶</a></h2>
+<section id="python-ssl-backend-snxui">
+<h3>3.1 <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> backend (snxui)<a class="headerlink" href="#python-ssl-backend-snxui" title="Link to this heading">¶</a></h3>
+<section id="id5">
+<h4>Плюсы<a class="headerlink" href="#id5" title="Link to this heading">¶</a></h4>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Плюс</p></th>
+<th class="head"><p>Пояснение</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p><strong>Нет внешних бинарников</strong></p></td>
+<td><p>Не нужен snx-rs или /usr/bin/snx. Работает где есть Python 3.10+</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p><strong>Решает RADIUS MultiChallenge</strong></p></td>
+<td><p>OTP расходуется один раз в CCC; SNX binary не запускается повторно</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p><strong>Пароль не хранится на диске</strong></p></td>
+<td><p>Пароль живёт только в памяти во время <code class="docutils literal notranslate"><span class="pre">connect()</span></code>, не пишется в файл</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p><strong>Быстрый старт</strong></p></td>
+<td><p>Нет запуска daemon-процесса, нет polling через <code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">status</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p><strong>Единая кодовая база</strong></p></td>
+<td><p>Все протокольные детали в Python — легко отлаживать, нет subprocess IPC</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p><strong>Полный контроль над потоком</strong></p></td>
+<td><p>Можно добавить логирование, packet inspection, метрики без патча snx-rs</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p><strong>In-process OTP callback</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">TwoFactorCallback</span></code> вызывается напрямую из GTK — без PTY/pexpect</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p><strong>Прозрачные ошибки</strong></p></td>
+<td><p>Python exceptions с полным traceback, не парсинг PTY-вывода</p></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p><strong>Нет setcap на интерпретаторе</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pkexec</span> <span class="pre">snxui-net-helper</span></code> — root-права только у одного проверенного скрипта</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="id6">
+<h4>Минусы<a class="headerlink" href="#id6" title="Link to this heading">¶</a></h4>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Минус</p></th>
+<th class="head"><p>Пояснение</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p><strong>Нет IPSec</strong></p></td>
+<td><p>snx-rs поддерживает IKEv1/ESP; python_ssl — только SSL tunnel</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p><strong>Протокол “догнать” Rust</strong></p></td>
+<td><p>Реализация основана на reverse engineering snx-rs. Могут быть edge cases</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p><strong>GIL и производительность</strong></p></td>
+<td><p>Python GIL может быть проблемой при высоком трафике (select loop с GIL)</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p><strong>Меньше тестирования на железе</strong></p></td>
+<td><p>snx-rs используется годами; python_ssl — новый код</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p><strong>Нет reconnect/resume</strong></p></td>
+<td><p>При потере связи — полный переconnect с re-auth (snx-rs может иметь reconnect)</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p><strong>Один polkit-промпт на сессию</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">auth_self_keep</span></code> — один диалог при первом connect; при многократных reconnect может повториться</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="snx-rs-backend-snxrsbackend">
+<h3>3.2 <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> backend (через SNXRsBackend)<a class="headerlink" href="#snx-rs-backend-snxrsbackend" title="Link to this heading">¶</a></h3>
+<blockquote>
+<div><p><strong>Примечание:</strong> <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> по-прежнему поддерживается через <code class="docutils literal notranslate"><span class="pre">profile.backend</span> <span class="pre">=</span> <span class="pre">&quot;snx_rs&quot;</span></code>,
+но не является бэкендом по умолчанию. Новые профили используют <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code>.</p>
+</div></blockquote>
+<section id="id7">
+<h4>Плюсы<a class="headerlink" href="#id7" title="Link to this heading">¶</a></h4>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Плюс</p></th>
+<th class="head"><p>Пояснение</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p><strong>Зрелая реализация</strong></p></td>
+<td><p>snx-rs активно поддерживается, тестируется сообществом</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p><strong>IPSec поддержка</strong></p></td>
+<td><p>IKEv1 Phase 1+2, ESP на UDP 4500 — для серверов без SSL туннеля</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p><strong>Memory safety</strong></p></td>
+<td><p>Rust без GC, без GIL, нет утечек памяти, безопасная работа с сетью</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p><strong>Высокая производительность</strong></p></td>
+<td><p>Zero-copy packet forwarding, Tokio async runtime</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p><strong>Daemon-архитектура</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> работает независимо от UI; snxui — только frontend</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p><strong>Протокол всегда актуален</strong></p></td>
+<td><p>Авторы snx-rs следят за изменениями Check Point протокола</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="id8">
+<h4>Минусы<a class="headerlink" href="#id8" title="Link to this heading">¶</a></h4>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Минус</p></th>
+<th class="head"><p>Пояснение</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p><strong>Бинарная зависимость</strong></p></td>
+<td><p>Нужны <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> + <code class="docutils literal notranslate"><span class="pre">snxctl</span></code> — загрузка с GitHub, нет в apt/dnf</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p><strong>Пароль пишется в файл</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~/.config/snx-rs/snx-rs.conf</span></code> хранит пароль base64 (не шифрование!)</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p><strong>IPC через pexpect</strong></p></td>
+<td><p>snxui управляет snx-rs через <code class="docutils literal notranslate"><span class="pre">snxctl</span></code> + PTY — хрупко, зависит от формата вывода</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p><strong>Polling статуса</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snxctl</span> <span class="pre">status</span></code> вызывается каждые 2 сек до 60 сек — неэффективно</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p><strong>OTP через PTY</strong></p></td>
+<td><p>snxctl читает OTP через PTY — сложная цепочка против прямого callback</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p><strong>Версия фиксирована</strong></p></td>
+<td><p>snx-rs версия прибита в Makefile; обновление — ручное</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p><strong>Требует совместимость ABI</strong></p></td>
+<td><p>snx-rs — 64-bit; на некоторых системах нет всех зависимостей</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p><strong>Сложнее отлаживать</strong></p></td>
+<td><p>Проблемы в daemon-процессе; нужен <code class="docutils literal notranslate"><span class="pre">journalctl</span></code> / <code class="docutils literal notranslate"><span class="pre">snx-rs.log</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+</section>
+<hr class="docutils" />
+<section id="id9">
+<h2>4. Матрица совместимости с серверами<a class="headerlink" href="#id9" title="Link to this heading">¶</a></h2>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Тип сервера</p></th>
+<th class="head text-center"><p><code class="docutils literal notranslate"><span class="pre">python_ssl</span></code></p></th>
+<th class="head text-center"><p><code class="docutils literal notranslate"><span class="pre">snx-rs</span></code></p></th>
+<th class="head text-center"><p>SNX binary</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CCC + SSL tunnel</p></td>
+<td class="text-center"><p>✓</p></td>
+<td class="text-center"><p>✓</p></td>
+<td class="text-center"><p>✓ (с <code class="docutils literal notranslate"><span class="pre">ccc_only_auth</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>RADIUS MultiChallenge</p></td>
+<td class="text-center"><p>✓</p></td>
+<td class="text-center"><p>✓</p></td>
+<td class="text-center"><p>✗ (OTP расходуется)</p></td>
+</tr>
+<tr class="row-even"><td><p>IPSec-only сервер</p></td>
+<td class="text-center"><p>✗</p></td>
+<td class="text-center"><p>✓</p></td>
+<td class="text-center"><p>✗</p></td>
+</tr>
+<tr class="row-odd"><td><p>Portal-only (без CCC)</p></td>
+<td class="text-center"><p>✗</p></td>
+<td class="text-center"><p>✗</p></td>
+<td class="text-center"><p>✓ (<code class="docutils literal notranslate"><span class="pre">portal_auth=True</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>SSL + IPSec (оба)</p></td>
+<td class="text-center"><p>SSL only</p></td>
+<td class="text-center"><p>Оба</p></td>
+<td class="text-center"><p>SSL only</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<hr class="docutils" />
+<section id="id10">
+<h2>5. Выявленные расхождения и исправления<a class="headerlink" href="#id10" title="Link to this heading">¶</a></h2>
+<section id="id11">
+<h3>5.1 Протокольные исправления (сессия 2026-03-05, первая часть)<a class="headerlink" href="#id11" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Расхождение</p></th>
+<th class="head"><p>Статус</p></th>
+<th class="head"><p>Источник истины</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p><strong>Порядок байт SLIM</strong>: был <code class="docutils literal notranslate"><span class="pre">[TYPE][LENGTH]</span></code>, должно быть <code class="docutils literal notranslate"><span class="pre">[LENGTH][TYPE]</span></code></p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/codec.rs</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p><strong>Null-терминатор</strong>: не добавлялся в control frames</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/codec.rs</span></code> line: <code class="docutils literal notranslate"><span class="pre">data.push(b'\0')</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p><strong>Keepalive ID</strong>: был счётчик, должно быть всегда <code class="docutils literal notranslate"><span class="pre">&quot;0&quot;</span></code></p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/keepalive.rs</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">assert</span></code> vs RuntimeError</strong>: <code class="docutils literal notranslate"><span class="pre">assert</span> <span class="pre">ssl_sock</span></code> небезопасен с <code class="docutils literal notranslate"><span class="pre">-O</span></code></p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>best practice</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">rstrip</span></code> vs <code class="docutils literal notranslate"><span class="pre">removesuffix</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">rstrip</span></code> удаляет все нули</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>correctness</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">_range_to_cidr</span></code> fallback</strong>: возвращал untrusted <code class="docutils literal notranslate"><span class="pre">from_ip</span></code> в subprocess</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>security review</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">create_tun</span></code> без валидации</strong>: имя интерфейса шло в ioctl без проверки</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>security review</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">configure_net</span></code> без валидации IP</strong>: <code class="docutils literal notranslate"><span class="pre">assigned_ip</span></code> шёл в subprocess без <code class="docutils literal notranslate"><span class="pre">inet_aton</span></code></p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>security review</p></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">keepalive_timeout</span></code> без ограничения</strong>: hostile gateway мог заморозить loop</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>security review</p></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">ValueError</span></code> не ловился в <code class="docutils literal notranslate"><span class="pre">_do_connect</span></code></strong>: новая валидация создавала утечку SSL-сокета</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p><strong>S-expression wrapper</strong>: изначально был <code class="docutils literal notranslate"><span class="pre">CCCclientRequest</span></code>, должен быть <code class="docutils literal notranslate"><span class="pre">client_hello</span></code></p></td>
+<td><p>✅ Исправлено (prior session)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/proto.rs</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">protocol_version</span></code></strong>: был <code class="docutils literal notranslate"><span class="pre">(100)</span></code>, должен быть <code class="docutils literal notranslate"><span class="pre">(1)</span></code></p></td>
+<td><p>✅ Исправлено (prior session)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">snx-rs/proto.rs</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="id12">
+<h3>5.2 Архитектурные изменения (сессия 2026-03-05, вторая часть)<a class="headerlink" href="#id12" title="Link to this heading">¶</a></h3>
+<div class="table-wrapper colwidths-auto docutils container">
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>#</p></th>
+<th class="head"><p>Изменение</p></th>
+<th class="head"><p>Статус</p></th>
+<th class="head"><p>Обоснование</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>13</p></td>
+<td><p><strong>Удалён <code class="docutils literal notranslate"><span class="pre">setcap</span> <span class="pre">cap_net_admin</span></code></strong>: заменён на <code class="docutils literal notranslate"><span class="pre">pkexec</span> <span class="pre">snxui-net-helper</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>security — <code class="docutils literal notranslate"><span class="pre">setcap</span></code> на <code class="docutils literal notranslate"><span class="pre">/usr/bin/python3</span></code> даёт <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code> любому Python-скрипту</p></td>
+</tr>
+<tr class="row-odd"><td><p>14</p></td>
+<td><p><strong>Создан <code class="docutils literal notranslate"><span class="pre">snxui/helpers/snxui-net-helper</span></code></strong>: привилегированный Python-скрипт, root:root 0755, <code class="docutils literal notranslate"><span class="pre">/usr/lib/snxui/</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>polkit isolation</p></td>
+</tr>
+<tr class="row-even"><td><p>15</p></td>
+<td><p><strong>Polkit action <code class="docutils literal notranslate"><span class="pre">com.snxui.tun</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">auth_self_keep</span></code> + <code class="docutils literal notranslate"><span class="pre">exec.path</span></code> привязан к хелперу</p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>один диалог на desktop-сессию</p></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">create_tun()</span></code> — только валидация</strong>: OS-вызовы перенесены в <code class="docutils literal notranslate"><span class="pre">configure_net()</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>чёткое разделение ответственности</p></td>
+</tr>
+<tr class="row-even"><td><p>17</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">configure_net()</span></code> → pkexec + <code class="docutils literal notranslate"><span class="pre">os.open</span></code> + <code class="docutils literal notranslate"><span class="pre">ioctl</span></code></strong>: TUN-device открывается без <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code> после <code class="docutils literal notranslate"><span class="pre">ip</span> <span class="pre">tuntap</span> <span class="pre">add</span> <span class="pre">…</span> <span class="pre">user</span> <span class="pre">&lt;uid&gt;</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>kernel owner-check</p></td>
+</tr>
+<tr class="row-odd"><td><p>18</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">_run()</span></code> удалена из <code class="docutils literal notranslate"><span class="pre">ssl_tunnel.py</span></code></strong>: функция стала мёртвым кодом после рефакторинга</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-even"><td><p>19</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> — единственный бэкенд по умолчанию</strong>: <code class="docutils literal notranslate"><span class="pre">BackendFactory</span> <span class="pre">&quot;auto&quot;</span></code> → <code class="docutils literal notranslate"><span class="pre">PythonSSLBackend</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>упрощение для новых пользователей</p></td>
+</tr>
+<tr class="row-odd"><td><p>20</p></td>
+<td><p><strong>Миграция профилей v9</strong>: все существующие профили переводятся на <code class="docutils literal notranslate"><span class="pre">backend=&quot;python_ssl&quot;</span></code></p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>seamless upgrade</p></td>
+</tr>
+<tr class="row-even"><td><p>21</p></td>
+<td><p><strong>ProfileDialog упрощён</strong>: удалены строки выбора backend/transport/portal_auth/combined_auth/ccc_only_auth</p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>UI соответствует возможностям</p></td>
+</tr>
+<tr class="row-odd"><td><p>22</p></td>
+<td><p><strong>Docstring <code class="docutils literal notranslate"><span class="pre">BackendFactory</span></code></strong> описывал старую логику auto (snx-rs first)</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-even"><td><p>23</p></td>
+<td><p><strong>Тесты <code class="docutils literal notranslate"><span class="pre">test_dialogs.py</span></code></strong>: <code class="docutils literal notranslate"><span class="pre">SwitchRow.side_effect</span></code> содержал 6 элементов, реально создаётся 3 — 3-й SwitchRow получал неверный мок</p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-odd"><td><p>24</p></td>
+<td><p><strong>Тесты <code class="docutils literal notranslate"><span class="pre">test_ssl_tunnel_backend.py</span></code></strong>: 9 методов патчили удалённый <code class="docutils literal notranslate"><span class="pre">_run</span></code>; исправлены на <code class="docutils literal notranslate"><span class="pre">subprocess.run</span></code></p></td>
+<td><p>✅ Исправлено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-even"><td><p>25</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">privilege_handler.py</span></code> удалён</strong>: класс <code class="docutils literal notranslate"><span class="pre">PrivilegeHandler</span></code> (запуск SNX через pkexec) нигде не вызывался — мёртвый код с момента перехода на python_ssl</p></td>
+<td><p>✅ Удалено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-odd"><td><p>26</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">com.snxui.connect</span></code> / <code class="docutils literal notranslate"><span class="pre">com.snxui.disconnect</span></code> удалены</strong> из <code class="docutils literal notranslate"><span class="pre">com.snxui.policy</span></code> — не используются ни одним активным бэкендом</p></td>
+<td><p>✅ Удалено</p></td>
+<td><p>verify</p></td>
+</tr>
+<tr class="row-even"><td><p>27</p></td>
+<td><p><strong><code class="docutils literal notranslate"><span class="pre">auth_admin_keep</span></code> → <code class="docutils literal notranslate"><span class="pre">auth_self_keep</span></code></strong> в <code class="docutils literal notranslate"><span class="pre">com.snxui.tun</span></code>: обычный пользователь (не admin) вводит свой пароль, не нужен sudo/root</p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>usability</p></td>
+</tr>
+<tr class="row-odd"><td><p>28</p></td>
+<td><p><strong>Tunnel Type заблокирован в ProfileDialog</strong>: <code class="docutils literal notranslate"><span class="pre">set_sensitive(False)</span></code> + subtitle — IPSec не реализован в python_ssl backend</p></td>
+<td><p>✅ Реализовано</p></td>
+<td><p>UX</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="id13">
+<h2>6. Архитектура привилегированного хелпера<a class="headerlink" href="#id13" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>snxui (GTK, user context)
+    │
+    │ SSLTunnel.configure_net()
+    │
+    ▼
+subprocess.run([&quot;pkexec&quot;, &quot;/usr/lib/snxui/snxui-net-helper&quot;, &quot;create&quot;,
+                iface, uid, ip, *routes])
+    │
+    │ polkit: com.snxui.tun, auth_self_keep
+    │ (один диалог на desktop-сессию)
+    │
+    ▼
+snxui-net-helper (root context)
+    ├── _validate_iface(iface)      — re.match + длина
+    ├── _validate_uid(uid)          — int, 0..1_048_576
+    ├── _validate_ip(ip)            — socket.inet_aton()
+    ├── _validate_route(r)          — net/prefix форма
+    │
+    ├── ip link delete &lt;iface&gt;      (check=False — интерфейс может не существовать)
+    ├── ip tuntap add dev &lt;iface&gt; mode tun user &lt;uid&gt;
+    ├── ip addr add &lt;ip&gt;/32 dev &lt;iface&gt;
+    ├── ip link set &lt;iface&gt; mtu 1350 up
+    └── ip route add &lt;net&gt;/&lt;prefix&gt; dev &lt;iface&gt; (check=False — дубли игнорируются)
+
+snxui (user context, после pkexec)
+    └── os.open(&quot;/dev/net/tun&quot;, O_RDWR)
+        └── fcntl.ioctl(fd, TUNSETIFF, ...)   ← разрешено: tun-&gt;owner == current_fsuid()
+</pre></div>
+</div>
+<p><strong>Почему <code class="docutils literal notranslate"><span class="pre">TUNSETIFF</span></code> работает без <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>:</strong>
+Ядро Linux проверяет <code class="docutils literal notranslate"><span class="pre">tun-&gt;owner</span> <span class="pre">==</span> <span class="pre">current_fsuid()</span></code> — если TUN-устройство создано
+с <code class="docutils literal notranslate"><span class="pre">user</span> <span class="pre">&lt;uid&gt;</span></code>, процесс этого же UID может вызвать <code class="docutils literal notranslate"><span class="pre">TUNSETIFF</span></code> без <code class="docutils literal notranslate"><span class="pre">CAP_NET_ADMIN</span></code>.
+(Исходник: <code class="docutils literal notranslate"><span class="pre">drivers/net/tun.c</span></code>, функция <code class="docutils literal notranslate"><span class="pre">tun_chr_open</span></code>.)</p>
+</section>
+<hr class="docutils" />
+<section id="id14">
+<h2>7. Итоговая рекомендация<a class="headerlink" href="#id14" title="Link to this heading">¶</a></h2>
+<section id="python-ssl">
+<h3>Когда использовать <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> (по умолчанию)<a class="headerlink" href="#python-ssl" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Сервер использует <strong>RADIUS MultiChallenge</strong> (OTP) — главный use case</p></li>
+<li><p>snx-rs <strong>не установлен</strong> и <code class="docutils literal notranslate"><span class="pre">/usr/bin/snx</span></code> недоступен</p></li>
+<li><p>Нужна <strong>только SSL</strong> транспортировка (большинство серверов)</p></li>
+<li><p>Предпочтительна <strong>минимальная зависимость от внешних бинарников</strong></p></li>
+<li><p>Требуется <strong>отладка протокола</strong> — Python traceback значительно информативнее</p></li>
+<li><p>Нежелателен <code class="docutils literal notranslate"><span class="pre">setcap</span></code> на системном Python-интерпретаторе</p></li>
+</ul>
+</section>
+<section id="snx-rs-profile-backend-snx-rs">
+<h3>Когда использовать <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> (явно: <code class="docutils literal notranslate"><span class="pre">profile.backend</span> <span class="pre">=</span> <span class="pre">&quot;snx_rs&quot;</span></code>)<a class="headerlink" href="#snx-rs-profile-backend-snx-rs" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Сервер требует <strong>IPSec транспорт</strong> (редко, корпоративные среды)</p></li>
+<li><p>Нужна <strong>максимальная производительность</strong> при высоком трафике</p></li>
+<li><p>Требуется <strong>daemon-режим</strong> (VPN без UI, autostart системный)</p></li>
+<li><p>Уже установлен snx-rs и переход на python_ssl нецелесообразен</p></li>
+</ul>
+</section>
+<section id="snx-binary-profile-backend-snx">
+<h3>Когда использовать SNX binary (<code class="docutils literal notranslate"><span class="pre">profile.backend</span> <span class="pre">=</span> <span class="pre">&quot;snx&quot;</span></code>)<a class="headerlink" href="#snx-binary-profile-backend-snx" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Сервер использует <strong>portal-only auth</strong> (нет CCC endpoint)</p></li>
+<li><p><strong>Legacy-серверы</strong> (старый Check Point, нет SLIM)</p></li>
+<li><p>Тестирование совместимости — SNX binary как эталон</p></li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="id15">
+<h2>8. Файловая карта реализации<a class="headerlink" href="#id15" title="Link to this heading">¶</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>snxui/
+├── helpers/
+│   └── snxui-net-helper         # Привилегированный хелпер (root:root, 0755)
+│       ├── cmd_create()         # ip tuntap + ip addr + ip route
+│       └── cmd_destroy()        # ip link delete
+│
+├── data/
+│   └── com.snxui.policy         # Polkit: com.snxui.tun (auth_self_keep)
+│
+└── core/
+    ├── ccc_auth.py              # CCC-протокол — общий для всех бэкендов
+    │   ├── CCCAuth.authenticate()     → active_key
+    │   ├── discover_login_options()   → [(id, label)]
+    │   └── _snx_obfuscate()           → XOR-обфускация (идентично snx-rs util.rs)
+    │
+    ├── ssl_tunnel.py            # SLIM-протокол (python_ssl backend)
+    │   ├── SSLTunnel.connect()        → TunnelConfig (TLS + SLIM client_hello)
+    │   ├── SSLTunnel.create_tun()     → валидация имени, возвращает 0
+    │   ├── SSLTunnel.configure_net()  → pkexec helper + os.open + TUNSETIFF
+    │   ├── SSLTunnel._teardown_net()  → pkexec helper destroy (best-effort)
+    │   ├── SSLTunnel.run_packet_loop() → блокирует до disconnect
+    │   └── SSLTunnel.stop()           → сигнал через os.pipe()
+    │
+    ├── ssl_tunnel_backend.py    # Orchestration (python_ssl backend)
+    │   └── PythonSSLBackend(VPNBackend)
+    │       └── _do_connect(): discover → CCC auth → tunnel → pkexec → CONNECTED → loop
+    │
+    ├── snx_rs_backend.py        # snx-rs через snxctl (опциональный)
+    │   └── SNXRsBackend(VPNBackend)
+    │
+    ├── snx_backend.py           # SNX binary через pexpect (опциональный)
+    │   └── SNXBinaryBackend(VPNBackend)
+    │
+    └── vpn_backend.py           # Абстракция и фабрика
+        └── BackendFactory.create(profile)
+            ├── &quot;python_ssl&quot; / &quot;auto&quot; → PythonSSLBackend()
+            ├── &quot;snx_rs&quot;              → SNXRsBackend()  (если бинарники найдены)
+            └── &quot;snx&quot;                 → SNXBinaryBackend()
+</pre></div>
+</div>
+<hr class="docutils" />
+<p><em>Документ основан на анализе исходного кода snx-rs (codec.rs, ssl.rs, proto.rs, keepalive.rs, sexpr.rs, util.rs),
+отладке python_ssl на сервере ug.vpn.rt.ru (RADIUS MultiChallenge), и анализе ядра Linux <code class="docutils literal notranslate"><span class="pre">drivers/net/tun.c</span></code>.</em></p>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          
+          
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Консистентность snxui python_ssl и snx-rs</a><ul>
+<li><a class="reference internal" href="#id1">1. Краткий вывод</a></li>
+<li><a class="reference internal" href="#id2">2. Кросс-таблица: равенство и различия</a><ul>
+<li><a class="reference internal" href="#ccc">2.1 CCC-аутентификация</a></li>
+<li><a class="reference internal" href="#slim-ssl">2.2 SLIM-фреймирование (SSL туннель)</a></li>
+<li><a class="reference internal" href="#client-hello-s-expression">2.3 Client_hello S-expression</a></li>
+<li><a class="reference internal" href="#keepalive">2.4 Keepalive</a></li>
+<li><a class="reference internal" href="#tun">2.5 TUN-устройство и сеть</a></li>
+<li><a class="reference internal" href="#id3">2.6 Транспорт и архитектура</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id4">3. Плюсы и минусы каждого решения</a><ul>
+<li><a class="reference internal" href="#python-ssl-backend-snxui">3.1 <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> backend (snxui)</a><ul>
+<li><a class="reference internal" href="#id5">Плюсы</a></li>
+<li><a class="reference internal" href="#id6">Минусы</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#snx-rs-backend-snxrsbackend">3.2 <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> backend (через SNXRsBackend)</a><ul>
+<li><a class="reference internal" href="#id7">Плюсы</a></li>
+<li><a class="reference internal" href="#id8">Минусы</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id9">4. Матрица совместимости с серверами</a></li>
+<li><a class="reference internal" href="#id10">5. Выявленные расхождения и исправления</a><ul>
+<li><a class="reference internal" href="#id11">5.1 Протокольные исправления (сессия 2026-03-05, первая часть)</a></li>
+<li><a class="reference internal" href="#id12">5.2 Архитектурные изменения (сессия 2026-03-05, вторая часть)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id13">6. Архитектура привилегированного хелпера</a></li>
+<li><a class="reference internal" href="#id14">7. Итоговая рекомендация</a><ul>
+<li><a class="reference internal" href="#python-ssl">Когда использовать <code class="docutils literal notranslate"><span class="pre">python_ssl</span></code> (по умолчанию)</a></li>
+<li><a class="reference internal" href="#snx-rs-profile-backend-snx-rs">Когда использовать <code class="docutils literal notranslate"><span class="pre">snx-rs</span></code> (явно: <code class="docutils literal notranslate"><span class="pre">profile.backend</span> <span class="pre">=</span> <span class="pre">&quot;snx_rs&quot;</span></code>)</a></li>
+<li><a class="reference internal" href="#snx-binary-profile-backend-snx">Когда использовать SNX binary (<code class="docutils literal notranslate"><span class="pre">profile.backend</span> <span class="pre">=</span> <span class="pre">&quot;snx&quot;</span></code>)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id15">8. Файловая карта реализации</a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=8a448e45"></script>
+    <script src="_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    </body>
+</html>
