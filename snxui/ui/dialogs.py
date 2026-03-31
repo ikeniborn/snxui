@@ -134,30 +134,36 @@ class PasswordDialog:
         save_check: object,
     ) -> "Gtk.Box":
         """Build and return the Cancel / Connect button row."""
+        responded = False
+
+        def _submit():
+            nonlocal responded
+            if not responded:
+                responded = True
+                callback(password_row.get_text(), save_check.get_active())
+                dialog.close()
+
+        def _on_closed(_d):
+            nonlocal responded
+            if not responded:
+                responded = True
+                callback(None, False)
+
+        dialog.connect("closed", _on_closed)
+
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
         cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect(
-            "clicked",
-            lambda _b: (dialog.close(), callback(None, False)),
-        )
+        cancel_btn.connect("clicked", lambda _b: dialog.close())
         btn_box.append(cancel_btn)
 
         connect_btn = Gtk.Button(label="Connect")
         connect_btn.add_css_class("suggested-action")
-        connect_btn.connect(
-            "clicked",
-            lambda _b: (
-                # Read widget values BEFORE closing the dialog.  dialog.close()
-                # schedules widget destruction; although GTK4 defers the actual
-                # teardown until the next main-loop iteration, reading after
-                # close() is fragile and implementation-dependent.
-                callback(password_row.get_text(), save_check.get_active()),
-                dialog.close(),
-            ),
-        )
+        connect_btn.connect("clicked", lambda _b: _submit())
         btn_box.append(connect_btn)
+
+        password_row.connect("entry-activated", lambda _r: _submit())
         return btn_box
 
 
@@ -216,30 +222,39 @@ class TwoFactorDialog:
             box.append(prompt_label)
 
         prefs_group = Adw.PreferencesGroup()
-        # EntryRow (не PasswordEntryRow) — 2FA коды принято видеть при вводе
         code_row = Adw.EntryRow(title="Authentication Code")
         code_row.set_input_purpose(Gtk.InputPurpose.DIGITS)
         prefs_group.add(code_row)
         box.append(prefs_group)
 
+        responded = [False]
+
+        def _submit() -> None:
+            if not responded[0]:
+                responded[0] = True
+                callback(code_row.get_text().strip() or None)
+                dialog.close()
+
+        def _on_closed(_d: object) -> None:
+            if not responded[0]:
+                responded[0] = True
+                callback(None)
+
+        dialog.connect("closed", _on_closed)
+
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
         cancel_btn = Gtk.Button(label="Cancel")
-        # Читаем значение ДО close() — паттерн из PasswordDialog
-        cancel_btn.connect("clicked", lambda _b: (dialog.close(), callback(None)))
+        cancel_btn.connect("clicked", lambda _b: dialog.close())
         btn_box.append(cancel_btn)
 
         ok_btn = Gtk.Button(label="Authenticate")
         ok_btn.add_css_class("suggested-action")
-        ok_btn.connect(
-            "clicked",
-            lambda _b: (
-                callback(code_row.get_text().strip() or None),
-                dialog.close(),
-            ),
-        )
+        ok_btn.connect("clicked", lambda _b: _submit())
         btn_box.append(ok_btn)
+
+        code_row.connect("entry-activated", lambda _r: _submit())
         box.append(btn_box)
         return box
 
