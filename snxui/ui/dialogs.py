@@ -216,30 +216,39 @@ class TwoFactorDialog:
             box.append(prompt_label)
 
         prefs_group = Adw.PreferencesGroup()
-        # EntryRow (не PasswordEntryRow) — 2FA коды принято видеть при вводе
         code_row = Adw.EntryRow(title="Authentication Code")
         code_row.set_input_purpose(Gtk.InputPurpose.DIGITS)
         prefs_group.add(code_row)
         box.append(prefs_group)
 
+        responded = [False]
+
+        def _submit() -> None:
+            if not responded[0]:
+                responded[0] = True
+                callback(code_row.get_text().strip() or None)
+                dialog.close()
+
+        def _on_closed(_d: object) -> None:
+            if not responded[0]:
+                responded[0] = True
+                callback(None)
+
+        dialog.connect("closed", _on_closed)
+
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
         cancel_btn = Gtk.Button(label="Cancel")
-        # Читаем значение ДО close() — паттерн из PasswordDialog
-        cancel_btn.connect("clicked", lambda _b: (dialog.close(), callback(None)))
+        cancel_btn.connect("clicked", lambda _b: dialog.close())
         btn_box.append(cancel_btn)
 
         ok_btn = Gtk.Button(label="Authenticate")
         ok_btn.add_css_class("suggested-action")
-        ok_btn.connect(
-            "clicked",
-            lambda _b: (
-                callback(code_row.get_text().strip() or None),
-                dialog.close(),
-            ),
-        )
+        ok_btn.connect("clicked", lambda _b: _submit())
         btn_box.append(ok_btn)
+
+        code_row.connect("entry-activated", lambda _r: _submit())
         box.append(btn_box)
         return box
 

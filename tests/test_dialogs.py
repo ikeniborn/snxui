@@ -133,6 +133,149 @@ class TestPasswordDialog:
 
 
 # ---------------------------------------------------------------------------
+# TwoFactorDialog
+# ---------------------------------------------------------------------------
+
+
+def _find_signal_handler(mock_obj: MagicMock, signal: str) -> object:
+    """Return the handler registered for *signal* on *mock_obj* via connect(), or raise."""
+    for c in mock_obj.connect.call_args_list:
+        if c[0][0] == signal:
+            return c[0][1]
+    raise AssertionError(f"{signal!r} handler not registered on {mock_obj!r}")
+
+
+class TestTwoFactorDialog:
+    def _make_dialog(
+        self, profile_name: str = "Work VPN", prompt_text: str = "Enter OTP"
+    ) -> object:
+        from snxui.ui import dialogs as dlg_mod
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            from snxui.ui.dialogs import TwoFactorDialog
+
+            return TwoFactorDialog(profile_name=profile_name, prompt_text=prompt_text)
+
+    def test_init_stores_profile_name(self) -> None:
+        dlg = self._make_dialog("Corp VPN")
+        assert dlg._profile_name == "Corp VPN"
+
+    def test_show_creates_adw_dialog(self) -> None:
+        from snxui.ui import dialogs as dlg_mod
+
+        local_adw = MagicMock(name="Adw")
+        local_gtk = MagicMock(name="Gtk")
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import TwoFactorDialog
+
+                    TwoFactorDialog(profile_name="Work VPN").show(callback=MagicMock())
+
+        local_adw.Dialog.assert_called()
+
+    def test_enter_key_triggers_authenticate_callback(self) -> None:
+        """entry-activated signal on code_row calls callback with the entered code."""
+        from snxui.ui import dialogs as dlg_mod
+
+        callback = MagicMock()
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        local_adw.EntryRow.return_value.get_text.return_value = "123456"
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import TwoFactorDialog
+
+                    TwoFactorDialog(profile_name="Work VPN").show(callback=callback)
+
+        handler = _find_signal_handler(local_adw.EntryRow.return_value, "entry-activated")
+        handler(None)
+
+        callback.assert_called_once_with("123456")
+
+    def test_esc_via_closed_signal_triggers_cancel(self) -> None:
+        """closed signal on dialog calls callback(None) when no submit happened."""
+        from snxui.ui import dialogs as dlg_mod
+
+        callback = MagicMock()
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import TwoFactorDialog
+
+                    TwoFactorDialog(profile_name="Work VPN").show(callback=callback)
+
+        dialog_mock = local_adw.Dialog.return_value
+        handler = _find_signal_handler(dialog_mock, "closed")
+        handler(dialog_mock)
+
+        callback.assert_called_once_with(None)
+
+    def test_empty_code_returns_none(self) -> None:
+        """Submitting with an empty field passes None to callback."""
+        from snxui.ui import dialogs as dlg_mod
+
+        callback = MagicMock()
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        local_adw.EntryRow.return_value.get_text.return_value = "   "
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import TwoFactorDialog
+
+                    TwoFactorDialog(profile_name="Work VPN").show(callback=callback)
+
+        ok_lambda = local_gtk.Button.return_value.connect.call_args_list[1][0][1]
+        ok_lambda(None)
+
+        callback.assert_called_once_with(None)
+
+    def test_no_double_callback_on_submit_then_closed(self) -> None:
+        """Callback is called exactly once when submit is followed by closed signal."""
+        from snxui.ui import dialogs as dlg_mod
+
+        callback = MagicMock()
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        local_adw.EntryRow.return_value.get_text.return_value = "999999"
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import TwoFactorDialog
+
+                    TwoFactorDialog(profile_name="Work VPN").show(callback=callback)
+
+        dialog_mock = local_adw.Dialog.return_value
+        ok_lambda = local_gtk.Button.return_value.connect.call_args_list[1][0][1]
+        ok_lambda(None)
+
+        _find_signal_handler(dialog_mock, "closed")(dialog_mock)
+
+        callback.assert_called_once_with("999999")
+
+    def test_show_raises_without_gtk(self) -> None:
+        from snxui.ui import dialogs as dlg_mod
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", False):
+            with pytest.raises(ImportError):
+                from snxui.ui.dialogs import TwoFactorDialog
+
+                TwoFactorDialog(profile_name="x").show(callback=MagicMock())
+
+
+# ---------------------------------------------------------------------------
 # ProfileDialog
 # ---------------------------------------------------------------------------
 
