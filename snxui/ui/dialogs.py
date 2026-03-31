@@ -134,30 +134,36 @@ class PasswordDialog:
         save_check: object,
     ) -> "Gtk.Box":
         """Build and return the Cancel / Connect button row."""
+        responded = False
+
+        def _submit():
+            nonlocal responded
+            if not responded:
+                responded = True
+                callback(password_row.get_text(), save_check.get_active())
+                dialog.close()
+
+        def _on_closed(_d):
+            nonlocal responded
+            if not responded:
+                responded = True
+                callback(None, False)
+
+        dialog.connect("closed", _on_closed)
+
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         btn_box.set_halign(Gtk.Align.END)
 
         cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect(
-            "clicked",
-            lambda _b: (dialog.close(), callback(None, False)),
-        )
+        cancel_btn.connect("clicked", lambda _b: dialog.close())
         btn_box.append(cancel_btn)
 
         connect_btn = Gtk.Button(label="Connect")
         connect_btn.add_css_class("suggested-action")
-        connect_btn.connect(
-            "clicked",
-            lambda _b: (
-                # Read widget values BEFORE closing the dialog.  dialog.close()
-                # schedules widget destruction; although GTK4 defers the actual
-                # teardown until the next main-loop iteration, reading after
-                # close() is fragile and implementation-dependent.
-                callback(password_row.get_text(), save_check.get_active()),
-                dialog.close(),
-            ),
-        )
+        connect_btn.connect("clicked", lambda _b: _submit())
         btn_box.append(connect_btn)
+
+        password_row.connect("entry-activated", lambda _r: _submit())
         return btn_box
 
 
