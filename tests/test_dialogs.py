@@ -74,7 +74,7 @@ class TestPasswordDialog:
                 PasswordDialog(profile_name="x").show(callback=MagicMock())
 
     def test_callback_receives_none_on_cancel(self) -> None:
-        """Cancel button registered in show() calls callback(None, False) when clicked."""
+        """Closing the dialog without submitting calls callback(None, False)."""
         from snxui.ui import dialogs as dlg_mod
 
         received = []
@@ -92,17 +92,16 @@ class TestPasswordDialog:
                     dlg = PasswordDialog(profile_name="Work VPN")
                     dlg.show(callback=callback)
 
-        # Both cancel and connect buttons are Gtk.Button.return_value (same mock
-        # since MagicMock always returns the same instance for a given attribute).
-        # cancel_btn.connect("clicked", lambda) is the FIRST connect() call.
-        btn_mock = local_gtk.Button.return_value
-        cancel_lambda = btn_mock.connect.call_args_list[0][0][1]
-        cancel_lambda(None)  # simulate click; _b argument is unused
+        # dialog.connect("closed", handler) is the FIRST connect() call on the
+        # dialog mock.  Invoking the handler simulates Esc / window close.
+        dialog_mock = local_adw.Dialog.return_value
+        closed_handler = dialog_mock.connect.call_args_list[0][0][1]
+        closed_handler(None)
 
         assert received == [(None, False)]
 
     def test_callback_receives_password_on_connect(self) -> None:
-        """Connect button registered in show() calls callback with the typed password."""
+        """Connect button calls callback with the typed password."""
         from snxui.ui import dialogs as dlg_mod
 
         received = []
@@ -124,12 +123,75 @@ class TestPasswordDialog:
                     dlg = PasswordDialog(profile_name="Work VPN")
                     dlg.show(callback=callback)
 
-        # connect_btn.connect("clicked", lambda) is the SECOND connect() call.
+        # cancel_btn.connect("clicked", …) → index 0; connect_btn → index 1.
         btn_mock = local_gtk.Button.return_value
         connect_lambda = btn_mock.connect.call_args_list[1][0][1]
         connect_lambda(None)  # simulate click
 
         assert received == [("secret", True)]
+
+    def test_enter_key_triggers_connect_callback(self) -> None:
+        """Pressing Enter in the password field submits the form."""
+        from snxui.ui import dialogs as dlg_mod
+
+        received = []
+
+        def callback(pw, save):
+            received.append((pw, save))
+
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        local_adw.PasswordEntryRow.return_value.get_text.return_value = "mypass"
+        local_gtk.CheckButton.return_value.get_active.return_value = False
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import PasswordDialog
+                    dlg = PasswordDialog(profile_name="Work VPN")
+                    dlg.show(callback=callback)
+
+        # password_row.connect("entry-activated", handler) is the only connect()
+        # call on the PasswordEntryRow mock.
+        row_mock = local_adw.PasswordEntryRow.return_value
+        entry_activated = row_mock.connect.call_args_list[0][0][1]
+        entry_activated(None)
+
+        assert received == [("mypass", False)]
+
+    def test_no_double_callback_on_submit_then_closed(self) -> None:
+        """After Connect is clicked, a subsequent 'closed' signal is ignored."""
+        from snxui.ui import dialogs as dlg_mod
+
+        received = []
+
+        def callback(pw, save):
+            received.append((pw, save))
+
+        local_gtk = MagicMock(name="Gtk")
+        local_adw = MagicMock(name="Adw")
+
+        local_adw.PasswordEntryRow.return_value.get_text.return_value = "pw"
+        local_gtk.CheckButton.return_value.get_active.return_value = False
+
+        with patch.object(dlg_mod, "_GTK_AVAILABLE", True):
+            with patch.object(dlg_mod, "Adw", local_adw):
+                with patch.object(dlg_mod, "Gtk", local_gtk):
+                    from snxui.ui.dialogs import PasswordDialog
+                    dlg = PasswordDialog(profile_name="Work VPN")
+                    dlg.show(callback=callback)
+
+        btn_mock = local_gtk.Button.return_value
+        connect_lambda = btn_mock.connect.call_args_list[1][0][1]
+        connect_lambda(None)  # submit
+
+        dialog_mock = local_adw.Dialog.return_value
+        closed_handler = dialog_mock.connect.call_args_list[0][0][1]
+        closed_handler(None)  # closed fires afterwards
+
+        assert len(received) == 1
+        assert received[0] == ("pw", False)
 
 
 # ---------------------------------------------------------------------------
